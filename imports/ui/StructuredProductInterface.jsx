@@ -1078,6 +1078,17 @@ const StructuredProductInterface = ({
           couponFrequency: 'quarterly',
           floatingFormulaLabel: 'Max(EUR CMS 30Y − EUR CMS 5Y, 0%)'
         };
+      case 'athena':
+        // Shape of a classic Athena; the levels and amounts come from the term sheet
+        return {
+          issuePrice: 100,
+          referencePerformance: 'worst-of',
+          finalPayoffTiers: [
+            { fromLevel: 100, type: 'fixed', amount: '' },
+            { fromLevel: 60, type: 'fixed', amount: 100 },
+            { fromLevel: 0, type: 'linear', base: 100, gearing: 100, strike: 100 }
+          ]
+        };
       default:
         return {
           couponRate: 8.5,
@@ -1317,6 +1328,8 @@ const StructuredProductInterface = ({
           setSelectedTemplateId('himalaya');
         } else if (title.toLowerCase().includes('shark')) {
           setSelectedTemplateId('shark_note');
+        } else if (title.toLowerCase().includes('athena')) {
+          setSelectedTemplateId('athena');
         }
       }
 

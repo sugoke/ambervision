@@ -861,6 +861,7 @@ export function registerTools(mcpServer, user) {
       const basketAnalysis = tr?.basketAnalysis || null;
       const currentStatus = tr?.currentStatus || null;
       const structureParams = tr?.phoenixStructure
+        || tr?.athenaStructure
         || tr?.orionStructure
         || tr?.sharkNoteStructure
         || tr?.participationStructure

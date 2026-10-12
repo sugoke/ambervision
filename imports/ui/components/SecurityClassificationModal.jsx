@@ -86,6 +86,7 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
     // Normalize product type from template variants like "orion_memory", "phoenix_autocall"
     let productType = '';
     if (templateType.includes('orion')) productType = 'orion';
+    else if (templateType.includes('athena')) productType = 'autocallable';
     else if (templateType.includes('phoenix')) productType = 'phoenix';
     else if (templateType.includes('himalaya')) productType = 'himalaya';
     else if (templateType.includes('participation')) productType = 'participation_note';
@@ -104,7 +105,7 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
       } else {
         protectionType = 'capital_protected_conditional';
       }
-    } else if (templateType === 'phoenix' || templateType.includes('phoenix')) {
+    } else if (templateType === 'phoenix' || templateType.includes('phoenix') || templateType.includes('athena')) {
       // Phoenix products are barrier protected (conditional capital protection)
       protectionType = 'capital_protected_conditional';
     } else if (templateType === 'himalaya' || templateType.includes('himalaya')) {

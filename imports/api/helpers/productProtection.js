@@ -35,7 +35,7 @@ export function getProductProtectionType(product) {
     return PROTECTION_TYPES.CONDITIONAL;
   }
 
-  if (templateType.includes('phoenix') || templateType.includes('autocall')) {
+  if (templateType.includes('phoenix') || templateType.includes('autocall') || templateType.includes('athena')) {
     return PROTECTION_TYPES.CONDITIONAL;
   }
 

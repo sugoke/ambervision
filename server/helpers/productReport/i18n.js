@@ -230,7 +230,21 @@ const EN_MORE = {
   fixedCoupon: 'Fixed coupon', floatingCoupon: 'Floating coupon', targetCoupon: 'Target', couponFrequency: 'Coupon frequency', referenceRates: 'Reference rates',
   targetReached: 'Target reached on {date}', targetProgress: 'Coupons paid towards the target',
   colPeriod: 'Period', colRate: 'Rate p.a.', colPeriodCoupon: 'Coupon', colCumulative: 'Cumulative', colStatusShort: 'Status',
-  rsPaid: 'Paid', rsUpcoming: 'Upcoming', rsPending: 'To be fixed', rsRedeemed: 'Redeemed', rsCancelled: 'Cancelled'
+  rsPaid: 'Paid', rsUpcoming: 'Upcoming', rsPending: 'To be fixed', rsRedeemed: 'Redeemed', rsCancelled: 'Cancelled',
+
+  tplAthena: 'Athena', titlePayoffAthena: 'Redemption and return',
+  issuePrice: 'Issue price', returnOnIssue: 'Return on issue price', annualizedReturn: 'Annualised return',
+  capitalAtRisk: 'Capital at risk below', couponAccrued: 'Coupon per period (paid at redemption)', perDate: 'Set per date',
+  finalTiers: 'Final payoff (worst-of)', tierLevel: 'Worst-of level', tierPays: 'Redemption',
+  colRedemption: 'Redemption', colReturnIssue: 'Return on issue',
+  typeAutocall: 'Autocall', typeNoCall: 'Not callable',
+  outNotCalled: 'Not called', outNotCallable: 'Not callable', outRedeemed: 'Redeemed', outMissing: 'Price missing',
+  athenaAutocall: 'At {level} every underlying is at or above the autocall level of {autocall}: the note would redeem at {redemption} ({ret} on the issue price).',
+  athenaNoCall: 'At {level} the worst-of is below the autocall level of {autocall}: no redemption on this date.',
+  athenaNotCallable: 'This date has no autocall.',
+  athenaFinal: 'Final observation: at {level} the note would redeem at {redemption} ({ret} on the issue price).',
+  athenaValueText: 'Worst-of at {level} of initial: redemption {redemption}, {ret} on the {issue} issue price ({ann} a year).',
+  howAthena: 'No coupon is paid during the life of the note: it accrues and is paid with the redemption. On each callable date, if every underlying closes at or above its autocall level, the note redeems early at that date\'s amount. Otherwise, at maturity the {basket} selects the redemption from the final payoff tiers. Issued at {issue} of notional.'
 };
 
 const FR_MORE = {
@@ -302,7 +316,21 @@ const FR_MORE = {
   fixedCoupon: 'Coupon fixe', floatingCoupon: 'Coupon variable', targetCoupon: 'Objectif', couponFrequency: 'Fréquence des coupons', referenceRates: 'Taux de référence',
   targetReached: 'Objectif atteint le {date}', targetProgress: 'Coupons versés vers l\'objectif',
   colPeriod: 'Période', colRate: 'Taux annuel', colPeriodCoupon: 'Coupon', colCumulative: 'Cumul', colStatusShort: 'Statut',
-  rsPaid: 'Versé', rsUpcoming: 'À venir', rsPending: 'À fixer', rsRedeemed: 'Remboursé', rsCancelled: 'Annulé'
+  rsPaid: 'Versé', rsUpcoming: 'À venir', rsPending: 'À fixer', rsRedeemed: 'Remboursé', rsCancelled: 'Annulé',
+
+  tplAthena: 'Athena', titlePayoffAthena: 'Remboursement et rendement',
+  issuePrice: 'Prix d\'émission', returnOnIssue: 'Rendement sur le prix d\'émission', annualizedReturn: 'Rendement annualisé',
+  capitalAtRisk: 'Capital à risque sous', couponAccrued: 'Coupon par période (versé au remboursement)', perDate: 'Fixé par date',
+  finalTiers: 'Remboursement final (worst-of)', tierLevel: 'Niveau du worst-of', tierPays: 'Remboursement',
+  colRedemption: 'Remboursement', colReturnIssue: 'Rendement / émission',
+  typeAutocall: 'Rappel', typeNoCall: 'Non rappelable',
+  outNotCalled: 'Non rappelé', outNotCallable: 'Non rappelable', outRedeemed: 'Remboursé', outMissing: 'Cours manquant',
+  athenaAutocall: 'À {level}, chaque sous-jacent est au-dessus du niveau de rappel de {autocall} : le produit serait remboursé à {redemption} ({ret} sur le prix d\'émission).',
+  athenaNoCall: 'À {level}, le worst-of est sous le niveau de rappel de {autocall} : pas de remboursement à cette date.',
+  athenaNotCallable: 'Cette date ne comporte pas de rappel.',
+  athenaFinal: 'Observation finale : à {level}, le produit serait remboursé à {redemption} ({ret} sur le prix d\'émission).',
+  athenaValueText: 'Worst-of à {level} du niveau initial : remboursement {redemption}, {ret} sur le prix d\'émission de {issue} ({ann} par an).',
+  howAthena: 'Aucun coupon n\'est versé pendant la vie du produit : il s\'accumule et est payé avec le remboursement. À chaque date de rappel, si tous les sous-jacents clôturent au-dessus de leur niveau de rappel, le produit est remboursé par anticipation au montant de cette date. Sinon, à l\'échéance, le {basket} détermine le remboursement selon les paliers finaux. Émis à {issue} du nominal.'
 };
 
 const EN_ALL = { ...EN, ...EN_MORE };

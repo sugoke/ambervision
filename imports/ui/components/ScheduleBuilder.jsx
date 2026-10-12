@@ -10,7 +10,9 @@ import {
   resolvePaymentLag,
   paymentDateFor,
   addMonthsISO,
-  shouldAutoBuildSchedule
+  shouldAutoBuildSchedule,
+  hasRedemptionLadder,
+  redemptionAmountFor
 } from '/imports/utils/scheduleGenerator.js';
 
 // Schedule tab. The stored schedule rows (existingSchedule, owned by the parent) are the
@@ -26,6 +28,8 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
   // Check if this is a participation note
   const isParticipationNote = selectedTemplateId === 'participation_note';
   const isHimalaya = selectedTemplateId === 'himalaya';
+  // Athena: no coupon barrier; each row carries the amount the note redeems at
+  const isAthena = selectedTemplateId === 'athena';
 
   // Use props for configuration, fallback to defaults if not provided
   const frequency = scheduleConfig?.frequency || 'quarterly';
@@ -522,7 +526,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
           )}
 
           {/* Initial Coupon Barrier */}
-          {!isParticipationNote && (
+          {!isParticipationNote && !isAthena && (
             <div>
               <label style={{
                 display: 'block',
@@ -563,6 +567,46 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 style={{...inputStyle, width: '80px'}}
               />
               <small style={helperStyle}>Lowest autocall level reached by the step-down</small>
+            </div>
+          )}
+
+          {/* Athena: early-redemption amount of period n = base + n x coupon */}
+          {isAthena && (
+            <div>
+              <label style={configLabelStyle}>Redemption Base (%)</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={scheduleConfig?.redemptionBase ?? ''}
+                placeholder="100"
+                onChange={(e) => {
+                  const raw = e.target.value.replace(',', '.');
+                  if (raw === '') { handleConfigChange('redemptionBase', null); return; }
+                  const num = parseFloat(raw);
+                  if (!isNaN(num)) handleConfigChange('redemptionBase', num);
+                }}
+                style={{...inputStyle, width: '80px'}}
+              />
+              <small style={helperStyle}>Amount = base + n × coupon (e.g. 80% + n × 10%)</small>
+            </div>
+          )}
+          {isAthena && (
+            <div>
+              <label style={configLabelStyle}>Coupon per Period (%)</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={scheduleConfig?.redemptionStep ?? ''}
+                placeholder="e.g. 10"
+                onChange={(e) => {
+                  const raw = e.target.value.replace(',', '.');
+                  if (raw === '') { handleConfigChange('redemptionStep', null); return; }
+                  const num = parseFloat(raw);
+                  if (!isNaN(num)) handleConfigChange('redemptionStep', num);
+                }}
+                style={{...inputStyle, width: '80px'}}
+              />
+              <small style={helperStyle}>Accrues each period, paid only at redemption</small>
             </div>
           )}
 
@@ -677,9 +721,14 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                       Callable
                     </th>
                   )}
-                  {!isParticipationNote && (
+                  {!isParticipationNote && !isAthena && (
                     <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
                       Coupon Barrier (%)
+                    </th>
+                  )}
+                  {isAthena && (
+                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      Redemption Amount (%)
                     </th>
                   )}
                   <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
@@ -800,7 +849,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                         )}
                       </td>
                     )}
-                    {!isParticipationNote && (
+                    {!isParticipationNote && !isAthena && (
                       <td style={{ padding: '12px', textAlign: 'center' }}>
                         <input
                           type="number"
@@ -817,6 +866,36 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                             textAlign: 'center'
                           }}
                         />
+                      </td>
+                    )}
+                    {isAthena && (
+                      <td style={{ padding: '12px', textAlign: 'center' }}>
+                        {index === schedule.length - 1 ? (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontStyle: 'italic' }}>
+                            Final payoff tiers
+                          </span>
+                        ) : (
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={item.redemptionAmount ?? ''}
+                            placeholder="—"
+                            onChange={(e) => {
+                              const raw = e.target.value.replace(',', '.');
+                              if (raw === '') { updateScheduleItem(item.id, 'redemptionAmount', null); return; }
+                              const num = parseFloat(raw);
+                              if (!isNaN(num)) updateScheduleItem(item.id, 'redemptionAmount', num);
+                            }}
+                            style={{
+                              ...inputStyle,
+                              fontSize: '0.85rem',
+                              padding: '4px 6px',
+                              width: '80px',
+                              textAlign: 'center',
+                              opacity: item.isCallable ? 1 : 0.5
+                            }}
+                          />
+                        )}
                       </td>
                     )}
                     <td style={{ padding: '12px', textAlign: 'center' }}>
@@ -911,7 +990,10 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                   isCallable: true,
                   couponBarrier: initialCouponBarrier,
                   periodIndex: schedule.length + 1,
-                  rebateAmount: isParticipationNote ? 0 : null
+                  rebateAmount: isParticipationNote ? 0 : null,
+                  ...(isAthena && hasRedemptionLadder(scheduleConfig || {})
+                    ? { redemptionAmount: redemptionAmountFor(schedule.length + 1, scheduleConfig) }
+                    : {})
                 }, 'observationDate', observationDate);
 
                 commitSchedule([...schedule, newObs]);

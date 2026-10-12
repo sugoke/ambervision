@@ -14,6 +14,7 @@ import { ReverseConvertibleBondEvaluator } from '/imports/api/evaluators/reverse
 import { BonusCertificateEvaluator } from '/imports/api/evaluators/bonusCertificateEvaluator';
 import { TwinWinEvaluator } from '/imports/api/evaluators/twinWinEvaluator';
 import { RateEvaluator } from '/imports/api/evaluators/rateEvaluator';
+import { AthenaEvaluator } from '/imports/api/evaluators/athenaEvaluator';
 import { PhoenixChartBuilder } from '/imports/api/chartBuilders/phoenixChartBuilder';
 import { OrionChartBuilder } from '/imports/api/chartBuilders/orionChartBuilder';
 import { HimalayaChartBuilder } from '/imports/api/chartBuilders/himalayaChartBuilder';
@@ -24,6 +25,7 @@ import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/r
 import { BonusCertificateChartBuilder } from '/imports/api/chartBuilders/bonusCertificateChartBuilder';
 import { TwinWinChartBuilder } from '/imports/api/chartBuilders/twinWinChartBuilder';
 import { RateChartBuilder } from '/imports/api/chartBuilders/rateChartBuilder';
+import { AthenaChartBuilder } from '/imports/api/chartBuilders/athenaChartBuilder';
 import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { extractExportFields } from '/imports/api/helpers/reportExportFieldExtractor';
@@ -626,8 +628,15 @@ if (Meteor.isServer) {
     const structure = productData.structure || {};
     const structureParams = productData.structureParameters || {};
 
-    // Look for Himalaya indicators in product name/title (HIGHEST PRIORITY)
+    // Athena by explicit templateId or name, before the name checks below: an Athena's
+    // title can mention a basket or rate that would otherwise route it elsewhere.
     const productName = (productData.title || productData.productName || '').toLowerCase();
+    if (productData.templateId === 'athena' || productName.includes('athena')) {
+      console.log('[detectTemplateId] ✅ Detected ATHENA');
+      return 'athena';
+    }
+
+    // Look for Himalaya indicators in product name/title (HIGHEST PRIORITY)
     const isHimalayaByName = productName.includes('himalaya');
 
     if (isHimalayaByName) {
@@ -835,6 +844,11 @@ const TEMPLATE_REGISTRY = {
     evaluator: RateEvaluator,
     chartBuilder: RateChartBuilder,
     uiComponent: 'RateReport'
+  },
+  athena: {
+    evaluator: AthenaEvaluator,
+    chartBuilder: AthenaChartBuilder,
+    uiComponent: 'AthenaReport'
   },
   // Future templates can be added here
 };

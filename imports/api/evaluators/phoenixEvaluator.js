@@ -479,44 +479,13 @@ export const PhoenixEvaluator = {
   },
 
   /**
-   * Build observation schedule analysis
+   * Initial price each underlying is measured against, keyed by ticker: the term sheet
+   * strike, restated into pence or rebased onto a split-adjusted series when the feed
+   * proves it, flagged (STRIKE_FEED_MISMATCH) and kept otherwise. Shared with the Athena
+   * evaluator, which observes the same worst-of basket.
+   * Also publishes the basis onto each underlying as `effectiveInitialPrice`.
    */
-  async buildObservationSchedule(product, underlyings, phoenixParams, issueCollector = null) {
-    let schedule = product.observationSchedule || [];
-
-    // Generate schedule if missing
-    if (schedule.length === 0) {
-      console.log(`⚠️ Phoenix: Product missing observationSchedule, generating automatically`);
-      schedule = this.generateObservationSchedule(product, phoenixParams);
-
-      // If still empty after generation (shouldn't happen), return empty structure
-      if (schedule.length === 0) {
-        return {
-          totalObservations: 0,
-          nextObservation: null,
-          observations: [],
-          totalCouponsEarnedFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
-          totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
-          remainingObservations: 0,
-          hasMemoryAutocall: phoenixParams.memoryAutocall || false,
-          hasMemoryCoupon: phoenixParams.memoryCoupon || false,
-          hasGuaranteedCoupon: phoenixParams.guaranteedCoupon || false,
-          underlyingAutocallFlags: {}
-        };
-      }
-    }
-
-    const today = new Date();
-    const tradeDate = new Date(product.tradeDate || product.issueDate);
-    const observations = [];
-    let totalCouponsEarned = 0;
-    let totalMemoryCoupons = 0;
-    let productCalled = false;
-    let callDate = null;
-
-    // Memory Autocall: Track which underlyings have reached autocall level (across any observation)
-    const underlyingAutocallFlags = {}; // {ticker: firstFlaggedDate}
-
+  async resolveInitialPrices(underlyings, tradeDate, issueCollector = null) {
     // Use contractual strike prices as initial reference for barrier/coupon evaluation.
     // Strike prices are the official reference levels from the term sheet, so the strike is
     // authoritative: it defines the contract, and every barrier is quoted as a percentage of it.
@@ -606,6 +575,49 @@ export const PhoenixEvaluator = {
         });
       }
     }
+    return tradeDatePrices;
+  },
+
+  /**
+   * Build observation schedule analysis
+   */
+  async buildObservationSchedule(product, underlyings, phoenixParams, issueCollector = null) {
+    let schedule = product.observationSchedule || [];
+
+    // Generate schedule if missing
+    if (schedule.length === 0) {
+      console.log(`⚠️ Phoenix: Product missing observationSchedule, generating automatically`);
+      schedule = this.generateObservationSchedule(product, phoenixParams);
+
+      // If still empty after generation (shouldn't happen), return empty structure
+      if (schedule.length === 0) {
+        return {
+          totalObservations: 0,
+          nextObservation: null,
+          observations: [],
+          totalCouponsEarnedFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
+          totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
+          remainingObservations: 0,
+          hasMemoryAutocall: phoenixParams.memoryAutocall || false,
+          hasMemoryCoupon: phoenixParams.memoryCoupon || false,
+          hasGuaranteedCoupon: phoenixParams.guaranteedCoupon || false,
+          underlyingAutocallFlags: {}
+        };
+      }
+    }
+
+    const today = new Date();
+    const tradeDate = new Date(product.tradeDate || product.issueDate);
+    const observations = [];
+    let totalCouponsEarned = 0;
+    let totalMemoryCoupons = 0;
+    let productCalled = false;
+    let callDate = null;
+
+    // Memory Autocall: Track which underlyings have reached autocall level (across any observation)
+    const underlyingAutocallFlags = {}; // {ticker: firstFlaggedDate}
+
+    const tradeDatePrices = await this.resolveInitialPrices(underlyings, tradeDate, issueCollector);
 
     // Process each observation
     for (const [i, obs] of schedule.entries()) {

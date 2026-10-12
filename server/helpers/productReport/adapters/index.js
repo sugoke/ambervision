@@ -14,6 +14,7 @@ import reverseConvertibleBond from './reverseConvertibleBond.js';
 import bonusCertificate from './bonusCertificate.js';
 import twinWin from './twinWin.js';
 import rate from './rate.js';
+import athena from './athena.js';
 import { underlyingsOf } from '../common.js';
 
 const generic = {
@@ -40,7 +41,8 @@ const ADAPTERS = {
   reverse_convertible_bond: reverseConvertibleBond,
   bonus_certificate: bonusCertificate,
   twin_win: twinWin,
-  rate
+  rate,
+  athena
 };
 
 export const adapterFor = (templateId) => ADAPTERS[templateId] || generic;

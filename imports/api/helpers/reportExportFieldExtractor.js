@@ -48,6 +48,13 @@ const TEMPLATE_EXTRACTORS = {
     capitalReturnPercent: pickNumber(tr?.redemption?.capitalComponent),
     indicativeMaturityValuePercent: pickNumber(tr?.redemption?.totalValue),
     totalCouponsEarnedPercent: pickNumber(tr?.redemption?.coupon)
+  }),
+  // Athena pays no coupon on its own: it is inside the redemption amount
+  athena: (tr) => ({
+    minGuaranteedPercent: null,
+    capitalReturnPercent: pickNumber(tr?.indicativeMaturityValue?.redemptionAmount),
+    indicativeMaturityValuePercent: pickNumber(tr?.indicativeMaturityValue?.redemptionAmount),
+    totalCouponsEarnedPercent: null
   })
 };
 

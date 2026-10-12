@@ -171,7 +171,8 @@ const getProductTypeIcon = (templateId) => {
     'shark_note': '🦈',
     'participation_note': '📈',
     'reverse_convertible': '🔄',
-    'reverse_convertible_bond': '📜'
+    'reverse_convertible_bond': '📜',
+    'athena': '🦉'
   };
 
   return iconMap[templateId] || '📊';
@@ -2301,7 +2302,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       shark_note: 'Shark Note',
       participation_note: 'Participation Note',
       reverse_convertible: 'Reverse Convertible',
-      reverse_convertible_bond: 'Reverse Convertible Bond'
+      reverse_convertible_bond: 'Reverse Convertible Bond',
+      athena: 'Athena'
     };
 
     const titleCase = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());

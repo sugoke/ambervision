@@ -799,6 +799,68 @@ if (Meteor.isServer) {
           floatingFormulaLabel: "Max(EUR CMS 30Y − EUR CMS 5Y, 0%)"
         },
         template: "rate"
+      },
+
+      athena: {
+        title: "NESN/ROG Athena",
+        isin: "CH0000000000",
+        issuer: "UBS AG",
+        currency: "EUR",
+        tradeDate: "2025-03-14",
+        valueDate: "2025-03-21",
+        finalObservation: "2026-03-16",
+        maturity: "2026-03-23",
+        maturityDate: "2026-03-23",
+        notional: 100,
+        denomination: 1000,
+        basketMode: "worst-of",
+        underlyings: [
+          {
+            ticker: "NESN",
+            name: "Nestle SA",
+            isin: "CH0038863350",
+            strike: 92.50,
+            securityData: { symbol: "NESN", name: "Nestle SA", exchange: "SW", currency: "CHF", country: "CH", ticker: "NESN.SW" }
+          },
+          {
+            ticker: "ROG",
+            name: "Roche Holding AG",
+            isin: "CH0012032048",
+            strike: 255.10,
+            securityData: { symbol: "ROG", name: "Roche Holding AG", exchange: "SW", currency: "CHF", country: "CH", ticker: "ROG.SW" }
+          }
+        ],
+        finalObservationDate: "2026-03-16",
+        scheduleConfig: {
+          frequency: "quarterly",
+          coolOffPeriods: 0,
+          stepDownValue: 0,
+          initialAutocallLevel: 100,
+          // Early-redemption amount of period n = redemptionBase + n x redemptionStep
+          redemptionBase: 100,
+          redemptionStep: 2
+        },
+        // Rows exactly as printed in the automatic early redemption table, then the
+        // redemption valuation date as the last row (not callable: the final tiers apply)
+        observationSchedule: [
+          { id: "period_0", observationDate: "2025-06-16", valueDate: "2025-06-23", autocallLevel: 100, isCallable: true, redemptionAmount: 102, periodIndex: 1 },
+          { id: "period_1", observationDate: "2025-09-15", valueDate: "2025-09-22", autocallLevel: 100, isCallable: true, redemptionAmount: 104, periodIndex: 2 },
+          { id: "period_2", observationDate: "2025-12-15", valueDate: "2025-12-22", autocallLevel: 100, isCallable: true, redemptionAmount: 106, periodIndex: 3 },
+          { id: "period_3", observationDate: "2026-03-16", valueDate: "2026-03-23", autocallLevel: null, isCallable: false, redemptionAmount: null, periodIndex: 4 }
+        ],
+        templateId: "athena",
+        structureParams: {
+          // Issue price per certificate, % of notional
+          issuePrice: 100,
+          referencePerformance: "worst-of",
+          // Final redemption by worst-of level (% of initial), highest level first
+          finalPayoffTiers: [
+            { fromLevel: 100, type: "fixed", amount: 108 },
+            { fromLevel: 60, type: "fixed", amount: 100 },
+            { fromLevel: 0, type: "linear", base: 100, gearing: 100, strike: 100 }
+          ]
+        },
+        template: "athena"
       }
     };
 
@@ -966,6 +1028,28 @@ EXTRACTION RULES:
    - Formula: "100% + Max(0%; Min(66%; 120% × Performance(1)))" → strikeLevel=100, bonusLevel=100, participationRate=120, capEnabled=true, cap=66
    - "Knock-In Threshold = 60% × S(0)" → barrierLevel=60
    - "Valuation Date(1)" (single fixing) → barrierType='european'
+4c. For ATHENA template (autocallable that pays NO periodic coupon; the coupon is inside the redemption amount):
+   **structureParams.issuePrice**: the "Issue Price per Certificate" as a % of notional (e.g. "66.90%" -> 66.90). 100 if at par.
+   **observationSchedule**: one row per line of the Automatic Early Redemption table, dates copied exactly, then the
+     Redemption Valuation Date as the LAST row with isCallable = false, autocallLevel = null, redemptionAmount = null.
+     * autocallLevel: the Automatic Early Redemption Price / Level of that row in % of initial (e.g. "90% x Share Initial" -> 90).
+     * redemptionAmount: the Automatic Early Redemption Amount of that row in % of notional, computed from the
+       formula with that row's n. Example: "N x [80% + n x 10%]" with n = 2 -> 100, n = 3 -> 110.
+     * periodIndex: the row's n when the table numbers its rows (e.g. 2, 3), else 1, 2, 3...
+     * Do NOT set couponBarrier: an Athena has no coupon barrier.
+   **scheduleConfig.redemptionBase / redemptionStep**: from "N x [base + n x step]" (e.g. 80 and 10). When the amount
+     is "100% + n x coupon", base = 100 and step = coupon. Leave null if the amounts are not of this form.
+   **scheduleConfig.frequency**: spacing of the autocall dates ("monthly", "quarterly", "semi-annually", "annually").
+   **structureParams.finalPayoffTiers**: the Final Redemption cases, as an array ordered from the HIGHEST worst-of level
+     down. Levels are in % of the initial level, amounts in % of notional:
+     * "If WO Share Final >= X% x WO Share Initial: N x A%" -> { fromLevel: X, type: "fixed", amount: A }
+     * "Else if WO Share Final >= Y% x WO Share Initial: N x [B% + G% x (WO Share Final - K% x Share Initial) / WO Share Initial]"
+       -> { fromLevel: Y, type: "linear", base: B, gearing: G, strike: K }
+       ("N x WO Share Final / WO Share Initial" is base 100, gearing 100, strike 100.)
+     * "Otherwise: N x C%" -> { fromLevel: 0, type: "fixed", amount: C }
+     EXAMPLE: "1) >= 85%: N x 118%; 2) Else if >= 20%: N x [100% + 120% x (WO Final - 85% x Initial)/WO Initial]; 3) Otherwise N x 0%"
+       -> [{ fromLevel: 85, type: "fixed", amount: 118 }, { fromLevel: 20, type: "linear", base: 100, gearing: 120, strike: 85 }, { fromLevel: 0, type: "fixed", amount: 0 }]
+   **Underlying "strike"**: the Share Initial (initial reference price), NOT the "Strike Price" line (e.g. "648 (80% of Share Initial)").
 5. For observation schedule: generate all observation dates based on frequency and dates found in term sheet
 6. For structure and payoffStructure: create the appropriate components based on product type
 7. If a field is not found in the term sheet, use null or empty array
@@ -2033,7 +2117,9 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
             const templateLower = templateId.toLowerCase();
 
             let structuredProductType = 'other';
-            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+            if (templateLower.includes('athena')) {
+              structuredProductType = 'autocallable';
+            } else if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
               structuredProductType = 'phoenix';
             } else if (templateLower.includes('orion')) {
               structuredProductType = 'orion';
@@ -2108,7 +2194,8 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
         { _id: 'phoenix_autocallable', name: 'Phoenix Autocallable', icon: '🔥' },
         { _id: 'orion_memory', name: 'Orion', icon: '⭐' },
         { _id: 'himalaya', name: 'Himalaya', icon: '🏔️' },
-        { _id: 'shark_note', name: 'Shark Note', icon: '🦈' }
+        { _id: 'shark_note', name: 'Shark Note', icon: '🦈' },
+        { _id: 'athena', name: 'Athena', icon: '🦉' }
       ];
     }
   });

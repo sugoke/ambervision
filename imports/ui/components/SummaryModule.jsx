@@ -1,6 +1,7 @@
 import React from 'react';
 import { BUILT_IN_TEMPLATES } from '/imports/api/templates';
 import { formatPerPeriodCouponLabel } from '/imports/utils/couponLabel.js';
+import { AthenaEvaluationHelpers } from '/imports/api/evaluators/athenaEvaluationHelpers';
 
 const SummaryModule = ({ 
   selectedTemplateId, 
@@ -212,6 +213,75 @@ const SummaryModule = ({
 
     </div>
   );
+
+  // Athena Summary: no coupon between dates; each callable date redeems at its own
+  // amount, and the final tiers decide at maturity.
+  const renderAthenaSummary = () => {
+    const tiers = AthenaEvaluationHelpers.describeTiers(structureParams?.finalPayoffTiers || []);
+    const capitalAtRisk = AthenaEvaluationHelpers.capitalAtRiskLevel(structureParams?.finalPayoffTiers || []);
+    const rows = observationSchedule || [];
+    const callable = rows.filter((row, i) => row.isCallable && i < rows.length - 1);
+
+    return (
+      <div>
+        <div style={cardStyle}>
+          <h3 style={titleStyle}>🦉 Athena Product Summary</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+            <div>
+              <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)', fontSize: '1rem' }}>Product Structure</h4>
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Product Type:</span>
+                <span style={valueStyle}>Athena (coupon paid at redemption)</span>
+              </div>
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Issue Price:</span>
+                <span style={valueStyle}>{structureParams?.issuePrice ?? 100}%</span>
+              </div>
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Observation Frequency:</span>
+                <span style={valueStyle}>{config.frequency}</span>
+              </div>
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Coupon per Period:</span>
+                <span style={valueStyle}>
+                  {scheduleConfig?.redemptionStep != null ? `${scheduleConfig.redemptionStep}% (accrued, paid at redemption)` : 'Per row (Schedule tab)'}
+                </span>
+              </div>
+              <div style={{ ...infoRowStyle, borderBottom: 'none' }}>
+                <span style={labelStyle}>Capital at risk below:</span>
+                <span style={valueStyle}>{capitalAtRisk !== null ? `${capitalAtRisk}% (worst-of at maturity)` : 'Never'}</span>
+              </div>
+            </div>
+            <div>
+              <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)', fontSize: '1rem' }}>Early Redemption</h4>
+              {callable.length === 0 && (
+                <div style={{ ...infoRowStyle, borderBottom: 'none' }}>
+                  <span style={labelStyle}>Callable dates:</span>
+                  <span style={valueStyle}>None</span>
+                </div>
+              )}
+              {callable.map((row, i) => (
+                <div key={row.id || i} style={i === callable.length - 1 ? { ...infoRowStyle, borderBottom: 'none' } : infoRowStyle}>
+                  <span style={labelStyle}>{row.observationDate}:</span>
+                  <span style={valueStyle}>
+                    ≥ {row.autocallLevel}% → {row.redemptionAmount != null ? `${row.redemptionAmount}%` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <h4 style={{ margin: '1.5rem 0 0.5rem 0', color: 'var(--text-primary)', fontSize: '1rem' }}>Final Payoff (worst-of)</h4>
+          {tiers.length === 0 && <div style={{ color: 'var(--text-muted)' }}>No tiers defined (Structure tab)</div>}
+          {tiers.map((tier, i) => (
+            <div key={i} style={i === tiers.length - 1 ? { ...infoRowStyle, borderBottom: 'none' } : infoRowStyle}>
+              <span style={labelStyle}>{tier.rangeLabel}</span>
+              <span style={{ ...valueStyle, fontFamily: 'monospace' }}>{tier.formulaLabel}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   // Orion Summary
   //
@@ -879,6 +949,8 @@ const SummaryModule = ({
         return renderHimalayaSummary();
       case 'shark_note':
         return renderSharkSummary();
+      case 'athena':
+        return renderAthenaSummary();
       case 'reverse_convertible':
       case 'reverse_convertible_bond':
         return renderReverseConvertibleSummary();

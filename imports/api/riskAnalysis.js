@@ -1007,7 +1007,9 @@ Write the summary now:`;
       const templateResults = report.templateResults || {};
 
       const underlyings = templateResults?.underlyings || [];
-      const phoenixParams = templateResults?.phoenixStructure || templateResults?.productParameters || {};
+      const athenaParams = templateResults?.athenaStructure || null;
+      // An Athena publishes the same barrier fields (protectionBarrier = capital-at-risk level)
+      const phoenixParams = templateResults?.phoenixStructure || athenaParams || templateResults?.productParameters || {};
       const observationAnalysis = templateResults?.observationAnalysis || null;
       const currentStatus = templateResults?.currentStatus || {};
       const status = currentStatus?.productStatus || 'unknown';
@@ -1017,7 +1019,19 @@ Write the summary now:`;
       let productType = 'Structured Product';
       let mechanism = '';
 
-      if (phoenixParams && (phoenixParams.autocallBarrier || phoenixParams.protectionBarrier)) {
+      if (athenaParams) {
+        productType = 'Athena';
+        const tiersText = (athenaParams.tiers || []).map(tier => `  - Worst-of ${tier.rangeLabel}: ${tier.formulaLabel} of notional`).join('\n');
+        mechanism = `This is an Athena (worst-of autocallable, no periodic coupon) with the following parameters:
+- Issue Price: ${athenaParams.issuePriceFormatted}
+- First Autocall Level: ${athenaParams.autocallBarrierFormatted}
+- Coupon per Period: ${athenaParams.couponPerPeriodFormatted || 'set per date'} (accrued, paid only with the redemption)
+- Observation Frequency: ${athenaParams.observationFrequency || 'per schedule'}
+- Final payoff tiers:
+${tiersText}
+
+WORST-OF MECHANICS: no coupon is paid during the life. On each callable date the note redeems early at that date's amount if every underlying is at or above its autocall level. At maturity the WORST-PERFORMING underlying selects the payoff tier; the redemption falls below 100% of notional under a worst-of of ${athenaParams.capitalAtRiskLevelFormatted}.`;
+      } else if (phoenixParams && (phoenixParams.autocallBarrier || phoenixParams.protectionBarrier)) {
         productType = 'Phoenix Autocallable';
         mechanism = `This is a Phoenix Autocallable product (worst-of basket structure) with the following parameters:
 - Autocall Barrier: ${phoenixParams.autocallBarrier}%

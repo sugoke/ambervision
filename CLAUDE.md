@@ -403,6 +403,7 @@ Each product template has a dedicated evaluator:
 - `participationNoteEvaluator.js` + `participationNoteEvaluationHelpers.js`
 - `reverseConvertibleEvaluator.js` + `reverseConvertibleEvaluationHelpers.js`
 - `reverseConvertibleBondEvaluator.js` + `reverseConvertibleBondEvaluationHelpers.js`
+- `athenaEvaluator.js` + `athenaEvaluationHelpers.js` - Athena: no periodic coupon, each schedule row carries its `redemptionAmount` (`scheduleConfig.redemptionBase` + n × `redemptionStep`), `structureParams.finalPayoffTiers` decide at maturity, `structureParams.issuePrice` for returns on the price paid. Reuses Phoenix's `resolveInitialPrices` (strike / pence / split check)
 - `sharedEvaluationHelpers.js` - Common utilities across evaluators
 
 #### Chart Builders (`/imports/api/chartBuilders/`)
@@ -423,6 +424,7 @@ Template-specific report rendering:
 - `ParticipationNoteReport.jsx`
 - `ReverseConvertibleReport.jsx`
 - `ReverseConvertibleBondReport.jsx`
+- `AthenaReport.jsx`
 
 #### Product Report PDF (all payoffs)
 One A4-landscape PDF for every template, in the portfolio-statement style:

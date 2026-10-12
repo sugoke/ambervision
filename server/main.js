@@ -2886,7 +2886,9 @@ Meteor.methods({
             const templateLower = templateId.toLowerCase();
 
             let structuredProductType = 'other';
-            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+            if (templateLower.includes('athena')) {
+              structuredProductType = 'autocallable';
+            } else if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
               structuredProductType = 'phoenix';
             } else if (templateLower.includes('orion')) {
               structuredProductType = 'orion';
@@ -3058,7 +3060,9 @@ Meteor.methods({
             const templateLower = templateId.toLowerCase();
 
             let structuredProductType = 'other';
-            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+            if (templateLower.includes('athena')) {
+              structuredProductType = 'autocallable';
+            } else if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
               structuredProductType = 'phoenix';
             } else if (templateLower.includes('orion')) {
               structuredProductType = 'orion';

@@ -1648,6 +1648,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                           case 'himalaya': return '🏔️';
                           case 'shark_note': return '🦈';
                           case 'participation_note': return '📈';
+                          case 'athena': return '🦉';
                           default: return '📊';
                         }
                       })()}
@@ -2067,6 +2068,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                             case 'himalaya': return '🏔️';
                             case 'shark_note': return '🦈';
                             case 'participation_note': return '📈';
+                            case 'athena': return '🦉';
                             default: return '📊';
                           }
                         })()}

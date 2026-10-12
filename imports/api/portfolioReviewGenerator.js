@@ -794,7 +794,7 @@ async function gatherPointsOfAttention(spReports) {
     const productIsin = report.productIsin || '';
     const tr = report.templateResults;
     const status = tr.currentStatus || {};
-    const structure = tr.phoenixStructure || tr.orionStructure || tr.participationStructure || {};
+    const structure = tr.phoenixStructure || tr.athenaStructure || tr.orionStructure || tr.participationStructure || {};
 
     for (const u of tr.underlyings) {
       const ticker = u.ticker || (u.fullTicker ? u.fullTicker.split('.')[0] : null);
@@ -946,7 +946,7 @@ async function gatherRedemptionData(spReports, holdings, viewAsFilter) {
     if (!report?.templateResults) continue;
     const tr = report.templateResults;
     const status = tr.currentStatus || {};
-    const structure = tr.phoenixStructure || tr.orionStructure || tr.participationStructure || {};
+    const structure = tr.phoenixStructure || tr.athenaStructure || tr.orionStructure || tr.participationStructure || {};
     const holding = holdingByProductId[productId];
     const imv = tr.indicativeMaturityValue;
 
@@ -1178,7 +1178,7 @@ async function generatePositionAnalyses(groupedHoldings, spReports, marketData, 
       const status = tr.currentStatus || {};
 
       // Product structure info (varies by template type)
-      const structure = tr.phoenixStructure || tr.orionStructure || tr.participationStructure || {};
+      const structure = tr.phoenixStructure || tr.athenaStructure || tr.orionStructure || tr.participationStructure || {};
       const templateId = report.templateId || '';
 
       context += `\n  Template: ${templateId}`;

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BUILT_IN_TEMPLATES } from '/imports/api/templates';
+import { AthenaEvaluationHelpers } from '/imports/api/evaluators/athenaEvaluationHelpers';
 
 // Structure Module Component - Configuration parameters for selected templates
 const StructureModule = ({ selectedTemplateId, structureParams, onParamChange }) => {
@@ -1887,6 +1888,168 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   <li><strong>Lower barrier ({lowerBarrier}%) touched:</strong> {capitalProtection}% + max(Bonus, performance) — only upside participation survives</li>
                   <li><strong>Both barriers touched:</strong> {capitalProtection}% + Bonus = {minRedemption}% (the guaranteed minimum)</li>
                   <li><strong>EUSIPA/SSPA classification:</strong> 1135 – Capital Protection with Twin Win</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'athena': {
+        const sp = structureParams || {};
+        const issuePrice = sp.issuePrice ?? 100;
+        const tiers = Array.isArray(sp.finalPayoffTiers) ? sp.finalPayoffTiers : [];
+        const preview = AthenaEvaluationHelpers.describeTiers(tiers);
+        const capitalAtRisk = AthenaEvaluationHelpers.capitalAtRiskLevel(tiers);
+        const numOrEmpty = (v) => (v === '' ? '' : (isNaN(parseFloat(v)) ? '' : parseFloat(v)));
+        const setTiers = (next) => onParamChange && onParamChange('finalPayoffTiers', next);
+        const updateTier = (i, field, value) => setTiers(tiers.map((t, k) => (k === i ? { ...t, [field]: value } : t)));
+        const removeTier = (i) => setTiers(tiers.filter((_, k) => k !== i));
+        const addTier = () => setTiers([...tiers, { fromLevel: '', type: 'fixed', amount: '' }]);
+        const sortTiers = () => setTiers([...tiers].sort((a, b) => (Number(b.fromLevel) || 0) - (Number(a.fromLevel) || 0)));
+        const tierInput = { ...inputBaseStyle, width: '90px', height: '34px', padding: '6px 8px' };
+        const cell = { padding: '8px', borderBottom: '1px solid var(--border-color)', verticalAlign: 'middle' };
+
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>🦉 Athena Configuration</h4>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Issue Price (% of notional)</label>
+                  <input
+                    type="number"
+                    value={issuePrice}
+                    min="0"
+                    step="any"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={commitOnChange('issuePrice')}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Price paid per certificate (e.g. 66.90%). Returns are also shown on this price.
+                  </div>
+                </div>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Early redemption</label>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                    Autocall levels and the redemption amount of each date are set in the <strong>Schedule</strong> tab
+                    (base + n × coupon, editable per row). No coupon is paid between dates.
+                  </div>
+                </div>
+              </div>
+
+              <h5 style={{ margin: '0 0 0.75rem 0', color: 'var(--text-primary)', fontSize: '1rem', fontWeight: '600' }}>
+                Final Payoff Tiers (worst-of level at the final observation)
+              </h5>
+              <div style={{ overflowX: 'auto', marginBottom: '1rem' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-tertiary)', textAlign: 'left' }}>
+                      <th style={cell}>From level (%)</th>
+                      <th style={cell}>Type</th>
+                      <th style={cell}>Amount / Base (%)</th>
+                      <th style={cell}>Gearing (%)</th>
+                      <th style={cell}>Strike (%)</th>
+                      <th style={cell}>Pays</th>
+                      <th style={cell}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tiers.map((tier, i) => {
+                      const isLinear = tier.type === 'linear';
+                      return (
+                        <tr key={i}>
+                          <td style={cell}>
+                            <input type="number" step="any" style={tierInput} value={tier.fromLevel ?? ''}
+                              onChange={(e) => updateTier(i, 'fromLevel', numOrEmpty(e.target.value))} />
+                          </td>
+                          <td style={cell}>
+                            <select style={{ ...tierInput, width: '120px', cursor: 'pointer' }} value={isLinear ? 'linear' : 'fixed'}
+                              onChange={(e) => updateTier(i, 'type', e.target.value)}>
+                              <option value="fixed">Fixed amount</option>
+                              <option value="linear">Linear</option>
+                            </select>
+                          </td>
+                          <td style={cell}>
+                            <input type="number" step="any" style={tierInput}
+                              value={(isLinear ? tier.base : tier.amount) ?? ''}
+                              onChange={(e) => updateTier(i, isLinear ? 'base' : 'amount', numOrEmpty(e.target.value))} />
+                          </td>
+                          <td style={cell}>
+                            {isLinear ? (
+                              <input type="number" step="any" style={tierInput} value={tier.gearing ?? ''}
+                                onChange={(e) => updateTier(i, 'gearing', numOrEmpty(e.target.value))} />
+                            ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                          </td>
+                          <td style={cell}>
+                            {isLinear ? (
+                              <input type="number" step="any" style={tierInput} value={tier.strike ?? ''}
+                                onChange={(e) => updateTier(i, 'strike', numOrEmpty(e.target.value))} />
+                            ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                          </td>
+                          <td style={{ ...cell, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            {(() => {
+                              const row = preview.find(p => p.fromLevel === Number(tier.fromLevel));
+                              return row ? `${row.rangeLabel} → ${row.formulaLabel}` : '—';
+                            })()}
+                          </td>
+                          <td style={cell}>
+                            <button type="button" onClick={() => removeTier(i)} title="Remove tier"
+                              style={{ background: 'transparent', color: 'var(--loss-color)', border: '1px solid var(--loss-color)', borderRadius: '4px', cursor: 'pointer', width: '26px', height: '26px' }}>
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                <button type="button" onClick={addTier}
+                  style={{ padding: '0.5rem 1rem', background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>
+                  ➕ Add tier
+                </button>
+                <button type="button" onClick={sortTiers}
+                  style={{ padding: '0.5rem 1rem', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}>
+                  Sort by level
+                </button>
+              </div>
+
+              <div style={{
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How it reads
+                </div>
+                <ul style={{ margin: 0, paddingLeft: '1.5rem' }}>
+                  {preview.map((row, i) => (
+                    <li key={i}>Worst-of <strong>{row.rangeLabel}</strong> of initial → <span style={{ fontFamily: 'monospace' }}>{row.formulaLabel}</span> of notional</li>
+                  ))}
+                  {preview.length > 0 && preview[preview.length - 1].fromLevel > 0 && (
+                    <li>Below {preview[preview.length - 1].fromLevel}% → 0%</li>
+                  )}
+                  <li>
+                    {capitalAtRisk !== null
+                      ? <>Final redemption falls below 100% of notional under a worst-of of <strong>{capitalAtRisk}%</strong>.</>
+                      : <>Final redemption never falls below 100% of notional.</>}
+                  </li>
+                  <li>Linear tier: base + gearing × (worst-of − strike). Example 100% + 125% × (worst-of − 80%).</li>
                 </ul>
               </div>
             </div>

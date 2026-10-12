@@ -186,7 +186,9 @@ Meteor.methods({
           const templateLower = templateId.toLowerCase();
 
           let structuredProductType = 'other';
-          if (templateLower.includes('phoenix') || templateLower.includes('autocall')) {
+          if (templateLower.includes('athena')) {
+            structuredProductType = 'autocallable';
+          } else if (templateLower.includes('phoenix') || templateLower.includes('autocall')) {
             structuredProductType = 'phoenix';
           } else if (templateLower.includes('orion')) {
             structuredProductType = 'orion';
@@ -596,6 +598,10 @@ Meteor.methods({
             } else {
               protectionType = 'capital_protected_conditional';
             }
+          } else if (templateType.includes('athena')) {
+            productType = 'autocallable';
+            // Athena: capital at risk below the final payoff tiers' break-even
+            protectionType = 'capital_protected_conditional';
           } else if (templateType.includes('phoenix') || templateType.includes('autocall')) {
             productType = 'phoenix';
             // Phoenix/Autocallable: Conditional protection via barrier
@@ -1027,6 +1033,10 @@ Meteor.methods({
       } else {
         protectionType = 'capital_protected_conditional';
       }
+    } else if (templateType.includes('athena')) {
+      productType = 'autocallable';
+      // Athena: capital at risk below the final payoff tiers' break-even
+      protectionType = 'capital_protected_conditional';
     } else if (templateType.includes('phoenix') || templateType.includes('autocall')) {
       productType = 'phoenix';
       // Phoenix/Autocallable: Conditional protection via barrier

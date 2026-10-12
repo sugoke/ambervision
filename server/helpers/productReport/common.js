@@ -164,7 +164,7 @@ export const basketModeLabel = (mode, t) => {
   return null;
 };
 
-const FREQ = { monthly: ['freqMonthly', 'periodMonth', 12], quarterly: ['freqQuarterly', 'periodQuarter', 4], 'semi-annual': ['freqSemiannual', 'periodSemester', 2], semiannual: ['freqSemiannual', 'periodSemester', 2], annual: ['freqAnnual', 'periodYear', 1], yearly: ['freqAnnual', 'periodYear', 1] };
+const FREQ = { monthly: ['freqMonthly', 'periodMonth', 12], quarterly: ['freqQuarterly', 'periodQuarter', 4], 'semi-annual': ['freqSemiannual', 'periodSemester', 2], semiannual: ['freqSemiannual', 'periodSemester', 2], 'semi-annually': ['freqSemiannual', 'periodSemester', 2], annually: ['freqAnnual', 'periodYear', 1], annual: ['freqAnnual', 'periodYear', 1], yearly: ['freqAnnual', 'periodYear', 1] };
 
 /** "4.00% per quarter (16.00% p.a.)" from a per-period rate and a frequency. */
 export const couponPerPeriod = (rate, frequency, f, t) => {

@@ -22,6 +22,7 @@ import ReverseConvertibleBondReport from './templates/ReverseConvertibleBondRepo
 import BonusCertificateReport from './templates/BonusCertificateReport.jsx';
 import TwinWinReport from './templates/TwinWinReport.jsx';
 import RateReport from './templates/RateReport.jsx';
+import AthenaReport from './templates/AthenaReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 import PriceSparkline from './components/PriceSparkline.jsx';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
@@ -1811,6 +1812,7 @@ const getTemplateName = (templateId) => {
     'bonus_certificate': 'Bonus Certificate',
     'twin_win': 'Twin Win',
     'rate': 'Rate / CMS Steepener',
+    'athena': 'Athena',
     'unknown_template': 'Unknown Template',
     'unknown': 'Unknown'
   };
@@ -1831,6 +1833,7 @@ const getTemplateIcon = (templateId) => {
     'bonus_certificate': '🎁',
     'twin_win': '🔁',
     'rate': '📈',
+    'athena': '🦉',
     'unknown_template': '📄',
     'unknown': '📄'
   };
@@ -1879,6 +1882,10 @@ const renderTemplateResults = (results, templateId, productId, product, user) =>
 
   if (templateId === 'rate' && results.templateType === 'rate') {
     return <RateReport results={results} productId={productId} />;
+  }
+
+  if (templateId === 'athena' && results.templateType === 'athena') {
+    return <AthenaReport results={results} productId={productId} />;
   }
 
   // Default generic display for unknown templates

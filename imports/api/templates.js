@@ -399,6 +399,17 @@ export const BUILT_IN_TEMPLATES = [
     createdAt: new Date(),
     updatedAt: new Date(),
     droppedItems: []
+  },
+  {
+    _id: "athena",
+    name: "Athena",
+    icon: "🦉",
+    category: "autocallable",
+    description: "Worst-of autocallable with no periodic coupon: the coupon accrues and is paid only with the redemption. On each callable date, if every underlying is at or above its autocall level, the note redeems at that date's amount (e.g. 80% + n × 10%). At maturity the worst-of level selects a payoff tier: fixed amounts or a geared put (base + gearing × (worst-of − strike)). Optional issue price below par; returns shown on notional and on the price paid.",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
   }
 ];
 

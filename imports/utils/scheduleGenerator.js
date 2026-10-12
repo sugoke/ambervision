@@ -28,10 +28,10 @@ const FREQUENCY_MONTHS = {
 
 // Config fields that change dates vs. fields that only change levels
 export const DATE_CONFIG_FIELDS = ['frequency', 'observationCalendar', 'paymentCalendar', 'paymentLagBusinessDays'];
-export const LEVEL_CONFIG_FIELDS = ['coolOffPeriods', 'stepDownValue', 'initialAutocallLevel', 'initialCouponBarrier', 'autocallFloor'];
+export const LEVEL_CONFIG_FIELDS = ['coolOffPeriods', 'stepDownValue', 'initialAutocallLevel', 'initialCouponBarrier', 'autocallFloor', 'redemptionBase', 'redemptionStep'];
 
 const DATE_FIELDS = ['observationDate', 'valueDate'];
-const LEVEL_FIELDS = ['autocallLevel', 'isCallable', 'couponBarrier'];
+const LEVEL_FIELDS = ['autocallLevel', 'isCallable', 'couponBarrier', 'redemptionAmount'];
 
 const round = (n) => Math.round(n * 1e6) / 1e6;
 
@@ -135,8 +135,22 @@ export const computeLevels = (index, scheduleConfig = {}) => {
     }
   }
 
-  return { isCallable, autocallLevel, couponBarrier };
+  const levels = { isCallable, autocallLevel, couponBarrier };
+  // Athena: the coupon is paid inside the redemption amount, base + n x step (n = period number)
+  if (hasRedemptionLadder(scheduleConfig)) {
+    levels.redemptionAmount = redemptionAmountFor(index + 1, scheduleConfig);
+  }
+  return levels;
 };
+
+// A schedule carries a redemption amount per row when its config defines the ladder (Athena)
+export const hasRedemptionLadder = (scheduleConfig = {}) =>
+  [scheduleConfig.redemptionBase, scheduleConfig.redemptionStep]
+    .some(v => v !== undefined && v !== null && v !== '' && !isNaN(Number(v)));
+
+// Early-redemption amount (% of notional) of period n: base + n x step
+export const redemptionAmountFor = (periodNumber, scheduleConfig = {}) =>
+  round(Number(scheduleConfig.redemptionBase ?? 100) + Number(scheduleConfig.redemptionStep ?? 0) * periodNumber);
 
 /**
  * Build a full schedule from the Schedule Configuration.
@@ -190,7 +204,7 @@ export const applyLevelConfig = (schedule = [], scheduleConfig = {}) =>
     const levels = computeLevels(index, scheduleConfig);
     const next = { ...row };
     LEVEL_FIELDS.forEach(field => {
-      if (!manual.includes(field)) next[field] = levels[field];
+      if (field in levels && !manual.includes(field)) next[field] = levels[field];
     });
     return next;
   });
