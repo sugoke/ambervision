@@ -632,8 +632,11 @@ Meteor.methods({
         });
       }
 
-      // 7. Get unread notifications count
+      // 7. Get unread notifications count: only those sent to this user (as the bell
+      // counts them). Without the recipient filter it counted everyone's notifications,
+      // which this user can never mark read, so the number never went down.
       const unreadCount = await NotificationsCollection.find({
+        sentToUsers: currentUser._id,
         readBy: { $ne: currentUser._id },
         createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
       }).countAsync();
