@@ -746,7 +746,7 @@ Meteor.methods({
  *        portfolio code can never read another client's account
  * @param {String} currency - currency to express the return in
  */
-export async function computeTWR({ codes, portfolioCode = null, isAdminAllClients = false, ownerSelector = null, currency = null, now = new Date(), label = '' }) {
+export async function computeTWR({ codes, portfolioCode = null, isAdminAllClients = false, ownerSelector = null, currency = null, now = new Date(), label = '', customStart = null }) {
   const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
   const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
   let targetPortfolioCodes = codes ? [...codes] : null;
@@ -847,9 +847,11 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
   };
 
   if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
-    opsQuery.portfolioCode = targetPortfolioCodes.length === 1
-      ? targetPortfolioCodes[0]
-      : { $in: targetPortfolioCodes };
+    // The account and its sub-accounts: Julius Baer books operations under
+    // `5040217-1` while snapshots use `5040217`, so an exact match found no
+    // flow at all and its deposits read as performance.
+    const { portfolioCodeRegexForBases } = await import('../../imports/utils/portfolioCode.js');
+    opsQuery.portfolioCode = { $regex: portfolioCodeRegexForBases(targetPortfolioCodes) };
   }
 
   const operations = await PMSOperationsCollection.find(opsQuery, {
@@ -955,8 +957,39 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
     '1Y': new Date(anchor.getTime() - 365 * 24 * 60 * 60 * 1000),
     'ALL': null
   };
+  // A period chosen by the caller (statement from/to): CUSTOM, measured like the others
+  if (customStart) periodDefs.CUSTOM = new Date(customStart);
 
   const formatTWR = (value) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)}%`;
+
+  // Money transferred in and out of the accounts over a period: the external
+  // flows the TWR neutralises, on the days after its base valuation up to its
+  // last one. Accounts entering the perimeter (structural flows) are not transfers.
+  const moneyFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: twrCurrency, maximumFractionDigits: 0 });
+  const formatMoney = (value, { signed = false } = {}) => {
+    const rounded = Math.round(value);
+    const text = moneyFormat.format(Math.abs(rounded));
+    if (rounded === 0) return text;
+    if (rounded < 0) return `-${text}`;
+    return signed ? `+${text}` : text;
+  };
+  const sumBetween = (byDate, fromExclusive, toInclusive) => Object.entries(byDate)
+    .filter(([date]) => date > fromExclusive && date <= toInclusive)
+    .reduce((sum, [, amount]) => sum + amount, 0);
+  const transfersOver = (baseDate) => {
+    const transfersIn = sumBetween(flowsResult.dailyInflows, baseDate, lastEntry.date);
+    const transfersOut = sumBetween(flowsResult.dailyOutflows, baseDate, lastEntry.date);
+    const netTransfers = transfersIn + transfersOut;
+    return {
+      transfersIn,
+      transfersOut,
+      netTransfers,
+      transfersInFormatted: formatMoney(transfersIn),
+      transfersOutFormatted: formatMoney(transfersOut),
+      netTransfersFormatted: formatMoney(netTransfers, { signed: true }),
+      netTransfersSign: Math.round(netTransfers) > 0 ? 'positive' : (Math.round(netTransfers) < 0 ? 'negative' : 'zero')
+    };
+  };
 
   const periods = {};
 
@@ -978,7 +1011,8 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
         twrAnnualized: annualized,
         twrAnnualizedFormatted: annualized !== null
           ? `${formatTWR(annualized).replace('%', '% (ann.)')}`
-          : null
+          : null,
+        ...transfersOver(dailyValues[0].date)
       };
       continue;
     }
@@ -987,11 +1021,13 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
 
     // Find the TWR entry closest to (but not after) the period start
     let startTWR = 0; // Default: reference point at the very beginning
+    let baseDate = dailyValues[0].date;
 
     // Look for an entry at or before the period start date
     for (let i = twrSeries.length - 1; i >= 0; i--) {
       if (twrSeries[i].date <= periodStartStr) {
         startTWR = twrSeries[i].cumulativeTWR;
+        baseDate = twrSeries[i].date;
         break;
       }
     }
@@ -1024,7 +1060,8 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
       // (first valuation, or start of the bank's operations history)
       measuredFrom: dailyValues[0].date > periodStartStr ? dailyValues[0].date : periodStartStr,
       endDate: lastEntry.date,
-      dataPoints: dataPointsInPeriod
+      dataPoints: dataPointsInPeriod,
+      ...transfersOver(baseDate)
     };
   }
 
@@ -1051,6 +1088,22 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
   // sign: the hex values of --gain-color / --loss-color (client/main.css).
   const monthlyReturns = buildCalendarReturns(twrSeries, 'month', dailyValues[0].date);
   const yearlyReturns = buildCalendarReturns(twrSeries, 'year', dailyValues[0].date);
+  // The same calendar returns restricted to the custom period: the series is
+  // rebased on its last point at or before the start, so the first month counts
+  // only the days inside the period (and is flagged partial).
+  let periodCalendar = null;
+  if (customStart) {
+    const startIso = new Date(customStart).toISOString().split('T')[0];
+    const before = twrSeries.filter(e => e.date <= startIso);
+    const base = before.length ? before[before.length - 1].cumulativeTWR : 0;
+    const inside = twrSeries.filter(e => e.date > startIso)
+      .map(e => ({ ...e, cumulativeTWR: (1 + e.cumulativeTWR) / (1 + base) - 1 }));
+    const baseDate = startIso > dailyValues[0].date ? startIso : dailyValues[0].date;
+    periodCalendar = {
+      monthly: buildCalendarReturns(inside, 'month', baseDate, lastDate),
+      yearly: buildCalendarReturns(inside, 'year', baseDate, lastDate)
+    };
+  }
   const GAIN_COLOR = '#57B891';
   const LOSS_COLOR = '#D9776B';
   const toBarChart = (rows) => ({
@@ -1075,6 +1128,7 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
     chartData,
     monthlyReturns,
     yearlyReturns,
+    periodCalendar,
     calendarCharts,
     metadata: {
       calculatedAt: new Date(),

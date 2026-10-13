@@ -5116,6 +5116,9 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Start Date</th>
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>End Date</th>
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Data Points</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Transfers In</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Transfers Out</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Net Transfers</th>
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>TWR</th>
                   </tr>
                 </thead>
@@ -5146,6 +5149,22 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
                           {period.dataPoints || 0}
+                        </td>
+                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                          {period.transfersInFormatted || '–'}
+                        </td>
+                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                          {period.transfersOutFormatted || '–'}
+                        </td>
+                        <td style={{
+                          padding: '0.75rem',
+                          textAlign: 'right',
+                          whiteSpace: 'nowrap',
+                          fontWeight: '600',
+                          color: period.netTransfersSign === 'positive' ? 'var(--gain-color)'
+                            : period.netTransfersSign === 'negative' ? 'var(--loss-color)' : 'var(--text-secondary)'
+                        }}>
+                          {period.netTransfersFormatted || '–'}
                         </td>
                         <td style={{
                           padding: '0.75rem',
@@ -6783,8 +6802,12 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       const letters = name.normalize('NFD').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
                       return letters ? `${letters}_` : '';
                     })()}${new Date().toISOString().split('T')[0]}`}
+                    // Anonymous by default: no client letters in the file name either
+                    anonymousFilename={`Portfolio_Report_${new Date().toISOString().split('T')[0]}`}
                     title="Report PDF"
                     sectionChoices={STATEMENT_SECTIONS}
+                    nameChoice
+                    periodChoice
                     options={{
                       viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
                       accountFilter: activeAccountTab,

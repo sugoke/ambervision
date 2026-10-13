@@ -318,6 +318,9 @@ export const buildConsolidatedDailyValues = (snapshots, convert, { maxGapDays = 
  */
 export const buildConsolidatedDailyFlows = (operations, convert, signedBankIds = new Set()) => {
   const dailyFlows = {};
+  // The same flows split by direction, for the transfers in / out of a period
+  const dailyInflows = {};
+  const dailyOutflows = {};
   for (const op of operations || []) {
     if (!PERIMETER_FLOW_TYPES.has(op.operationType)) continue;
     const signed = getSignedFlowAmount(op, { trustSign: signedBankIds.has(op.bankId) });
@@ -326,11 +329,13 @@ export const buildConsolidatedDailyFlows = (operations, convert, signedBankIds =
     const usesStd = op.std && Number(op.std.amount) !== 0 && Number.isFinite(Number(op.std.amount));
     const currency = (usesStd && op.std.currency) || op.currency || op.accountCurrency || op.operationCurrency || op.settlementCurrency;
     const value = convert(signed, currency);
-    if (value === null) return { dailyFlows: {}, missingRate: currency };
+    if (value === null) return { dailyFlows: {}, dailyInflows: {}, dailyOutflows: {}, missingRate: currency };
     const date = dateKeyOf(op.operationDate);
     dailyFlows[date] = (dailyFlows[date] || 0) + value;
+    const byDirection = value > 0 ? dailyInflows : dailyOutflows;
+    byDirection[date] = (byDirection[date] || 0) + value;
   }
-  return { dailyFlows, missingRate: null };
+  return { dailyFlows, dailyInflows, dailyOutflows, missingRate: null };
 };
 
 /**
