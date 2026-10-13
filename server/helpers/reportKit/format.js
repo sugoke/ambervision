@@ -144,6 +144,13 @@ export const formatterFor = (lang = 'en') => {
     dateLong: (d) => { const x = date(d); return x ? `${x.getUTCDate()} ${MONTHS[L][x.getUTCMonth()]} ${x.getUTCFullYear()}` : '—'; },
     /** 4 Oct 2026 / 4 oct. 2026 */
     dateShort: (d) => { const x = date(d); return x ? `${x.getUTCDate()} ${MONTHS_ABBR[L][x.getUTCMonth()]} ${x.getUTCFullYear()}` : '—'; },
+    /** Narrow table columns: 4 Oct 2026 / 04/10/2026 (French abbreviated months run too wide) */
+    dateCompact: (d) => {
+      const x = date(d);
+      if (!x) return '—';
+      if (L !== 'fr') return `${x.getUTCDate()} ${MONTHS_ABBR[L][x.getUTCMonth()]} ${x.getUTCFullYear()}`;
+      return `${String(x.getUTCDate()).padStart(2, '0')}/${String(x.getUTCMonth() + 1).padStart(2, '0')}/${x.getUTCFullYear()}`;
+    },
     /** 4 Oct / 4 oct. */
     dayMonth: (d) => { const x = date(d); return x ? `${x.getUTCDate()} ${MONTHS_ABBR[L][x.getUTCMonth()]}` : '—'; },
     monthAbbr: (monthIndex) => MONTHS_ABBR[L][monthIndex],

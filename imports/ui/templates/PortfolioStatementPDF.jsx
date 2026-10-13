@@ -22,7 +22,7 @@ const Cover = ({ data }) => {
       </div>
       <div style={{ position: 'absolute', left: 64, top: 214, width: 540, display: 'flex', flexDirection: 'column' }}>
         <div className="st-k" style={{ color: '#A9561A', letterSpacing: '0.3em', fontSize: 11 }}>{u.kicker}</div>
-        <h1 style={{ margin: '22px 0 0', fontSize: c.longName ? 52 : 72, lineHeight: c.longName ? '58px' : '76px', fontWeight: 300, letterSpacing: '-0.025em', color: '#1A2B40' }}>{c.clientName}</h1>
+        <h1 style={{ margin: '22px 0 0', fontSize: c.longName ? 34 : 44, lineHeight: c.longName ? '42px' : '52px', fontWeight: 300, letterSpacing: '-0.025em', color: '#1A2B40' }}>{c.clientName}</h1>
         <div style={{ marginTop: 24, width: 60, height: 2, background: '#DD772A' }} />
         <div style={{ marginTop: 24, fontSize: 21, lineHeight: '30px', fontWeight: 300, color: '#2A2F37' }}>{c.valuationText}</div>
         {c.emptyText && <div style={{ marginTop: 14, fontSize: 13, lineHeight: '20px', color: '#687080' }}>{c.emptyText}</div>}
@@ -247,11 +247,11 @@ const Allocation = ({ data, page: p }) => {
           <>
             <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.equitiesBySector}</span><span className="st-cap">{u.pctOfEquities}</span></div>
-              <div style={{ display: 'flex', flexDirection: 'column', paddingTop: 2 }}><ShareRows rows={p.sectors.slice(0, 8)} compactRows={p.sectors.length > 5} /></div>
+              <div style={{ display: 'flex', flexDirection: 'column', paddingTop: 2 }}><ShareRows rows={p.sectors} compactRows={p.sectors.length > 5} /></div>
             </section>
             <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.equitiesByRegion}</span><span className="st-cap">{u.pctOfEquitiesCountry}</span></div>
-              <div style={{ display: 'flex', flexDirection: 'column', paddingTop: 2 }}><ShareRows rows={p.regions.slice(0, 8)} compactRows /></div>
+              <div style={{ display: 'flex', flexDirection: 'column', paddingTop: 2 }}><ShareRows rows={p.regions} compactRows /></div>
             </section>
           </>
         )}
@@ -319,7 +319,7 @@ const Positions = ({ data, page: p }) => (
 
 // ── Liquidity and financing ──────────────────────────────────────────────────
 const CASH_COLS = 'minmax(0,1fr) 110px 44px 120px 110px 64px';
-const AccountTable = ({ u, title, caption, rows, totalLabel, totalText, totalWeight, negative }) => (
+const AccountTable = ({ u, title, caption, rows, totalLabel, totalText, totalWeight, negative, last }) => (
   <section style={{ display: 'flex', flexDirection: 'column' }}>
     <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{title}</span><span className="st-cap">{caption}</span></div>
     <div className="st-th" style={{ gridTemplateColumns: CASH_COLS, columnGap: 10 }}><span>{u.account}</span><span>{u.accountNo}</span><span>{u.ccy}</span><span className="st-n">{u.balanceInCcy}</span><span className="st-n">{u.valueComma}</span><span className="st-n">{u.pctOfGross}</span></div>
@@ -329,9 +329,9 @@ const AccountTable = ({ u, title, caption, rows, totalLabel, totalText, totalWei
         <span className={`st-n ${negative ? 'st-neg' : ''}`}>{r.balance}</span><span className={`st-n ${negative ? 'st-neg' : ''}`}>{r.valueRef}</span><span className={`st-n ${negative ? 'st-neg' : ''}`}>{r.weight}</span>
       </div>
     ))}
-    <div className="st-tr" style={{ gridTemplateColumns: CASH_COLS, columnGap: 10, fontWeight: 600, color: '#1A2B40', borderBottom: '1.5px solid #1A2B40' }}>
+    {last && <div className="st-tr" style={{ gridTemplateColumns: CASH_COLS, columnGap: 10, fontWeight: 600, color: '#1A2B40', borderBottom: '1.5px solid #1A2B40' }}>
       <span>{totalLabel}</span><span /><span /><span /><span className={`st-n ${negative ? 'st-neg' : ''}`}>{totalText}</span><span className={`st-n ${negative ? 'st-neg' : ''}`}>{totalWeight}</span>
-    </div>
+    </div>}
   </section>
 );
 
@@ -341,8 +341,8 @@ const Liquidity = ({ data, page: p }) => {
     <Page data={data} page={p} right={<KpiStrip kpis={p.kpis} />}>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', columnGap: 48, height: '100%' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
-          <AccountTable u={u} title={u.cashAccounts} caption={p.cash.caption} rows={p.cash.rows} totalLabel={u.totalCash} totalText={p.cash.totalText} totalWeight={p.cash.totalWeight} />
-          {p.financing && <AccountTable u={u} title={u.financing} caption={p.financing.caption || ''} rows={p.financing.rows} totalLabel={u.totalFinancing} totalText={p.financing.totalText} totalWeight={p.financing.totalWeight} negative />}
+          {p.cash && <AccountTable u={u} title={u.cashAccounts} caption={p.cash.caption} rows={p.cash.rows} totalLabel={u.totalCash} totalText={p.cash.totalText} totalWeight={p.cash.totalWeight} last={p.cash.last} />}
+          {p.financing && <AccountTable u={u} title={u.financing} caption={p.financing.caption || ''} rows={p.financing.rows} totalLabel={u.totalFinancing} totalText={p.financing.totalText} totalWeight={p.financing.totalWeight} last={p.financing.last} negative />}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
           {p.liquidInstruments && (
@@ -437,7 +437,7 @@ const Performance = ({ data, page: p }) => {
 };
 
 // ── Activity ─────────────────────────────────────────────────────────────────
-const TRADE_COLS = '72px 74px minmax(0,1fr) 64px 62px 58px 30px 96px';
+const TRADE_COLS = '72px 100px minmax(0,1fr) 64px 62px 58px 30px 96px';
 const Activity = ({ data, page: p }) => {
   const u = data.ui;
   return (
@@ -447,7 +447,7 @@ const Activity = ({ data, page: p }) => {
         <span className="st-cap">{p.counts.map(c => `${c.label} ${c.count}`).join(' · ')}</span>
       </div>
     ) : null}>
-      <div style={{ display: 'grid', gridTemplateColumns: p.first && (p.income || p.card) ? 'minmax(0,1fr) 320px' : '1fr', columnGap: 40, height: '100%' }}>
+      <div style={{ height: '100%' }}>
         <section style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.securitiesTransactions}</span><span className="st-cap">{p.trades.caption}</span></div>
           {p.trades.rows.length === 0 ? <div className="st-cap" style={{ padding: '14px 0' }}>{u.noTrades}</div> : (
@@ -455,7 +455,11 @@ const Activity = ({ data, page: p }) => {
               <div className="st-th" style={{ gridTemplateColumns: TRADE_COLS, columnGap: 8 }}><span>{u.date}</span><span>{u.side}</span><span>{u.security}<br />{u.isin}</span><span className="st-n">{u.qty}</span><span className="st-n">{u.price}</span><span className="st-n">{u.fees}</span><span>{u.ccy}</span><span className="st-n">{u.netAmount}</span></div>
               {p.trades.rows.map((r, i) => (
                 <div key={i} className="st-tr" style={{ gridTemplateColumns: TRADE_COLS, columnGap: 8, padding: '3px 0', fontSize: 11.5 }}>
-                  <span>{r.date}</span><span>{r.side}</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>{r.date}</span>
+                  <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                    <span className="st-ell" style={{ lineHeight: '15px' }}>{r.side}</span>
+                    {r.sideNote && <span className="st-ell" style={{ fontSize: 9.5, lineHeight: '12px', color: '#687080' }}>{r.sideNote}</span>}
+                  </span>
                   <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                     <span className="st-ell" style={{ color: '#1A2B40', lineHeight: '15px' }}>{r.security}</span>
                     <span className="st-mono st-ell" style={{ fontSize: 9.5, lineHeight: '12px', color: '#687080' }}>{r.isin}</span>
@@ -468,29 +472,36 @@ const Activity = ({ data, page: p }) => {
             </>
           )}
         </section>
-        {p.first && (p.income || p.card) && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 22, minWidth: 0 }}>
-            {p.income && (
-              <section>
-                <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.incomeReceived}</span><span className="st-cap">{u.incomeCaption}</span></div>
-                <div className="st-th" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 84px' }}><span>{u.ccy}</span><span className="st-n">{u.count}</span><span className="st-n">{u.netReceived}</span><span className="st-n">{u.taxWithheld}</span></div>
-                {p.income.rows.map(r => (
-                  <div key={r.ccy} className="st-tr" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 84px' }}>
-                    <span className="st-mono">{r.ccy}</span><span className="st-n">{r.count}</span><span className="st-n st-pos">{r.net}</span><span className="st-n" style={{ color: '#687080' }}>{r.tax}</span>
-                  </div>
-                ))}
-                <div className="st-tr" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 84px', fontWeight: 600, color: '#1A2B40', borderBottom: '1.5px solid #1A2B40' }}><span className="st-mono">{p.income.refCcy}</span><span className="st-n">{p.income.totalCount}</span><span className="st-n">{p.income.totalText}</span><span /></div>
-                <div className="st-cap" style={{ marginTop: 6 }}>{u.incomeNote}</div>
-              </section>
-            )}
-            {p.card && (
-              <section>
-                <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.cardSpending}</span><span className="st-cap">{u.perMonth}</span></div>
-                <div style={{ paddingTop: 8 }}><BarChart chart={p.card.chart} /></div>
-                <div className="st-cap" style={{ marginTop: 4 }}>{p.card.caption}</div>
-              </section>
-            )}
+      </div>
+    </Page>
+  );
+};
+
+// ── Income and card spending ─────────────────────────────────────────────────
+const Income = ({ data, page: p }) => {
+  const u = data.ui;
+  return (
+    <Page data={data} page={p}>
+      <div style={{ display: 'grid', gridTemplateColumns: p.income && p.card ? 'repeat(2, minmax(0,1fr))' : 'minmax(0,560px)', columnGap: 56 }}>
+        {p.income && (
+          <section>
+        <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.incomeReceived}</span><span className="st-cap">{u.incomeCaption}</span></div>
+        <div className="st-th" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 140px' }}><span>{u.ccy}</span><span className="st-n">{u.count}</span><span className="st-n">{u.netReceived}</span><span className="st-n">{u.taxWithheld}</span></div>
+        {p.income.rows.map(r => (
+          <div key={r.ccy} className="st-tr" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 140px' }}>
+            <span className="st-mono">{r.ccy}</span><span className="st-n">{r.count}</span><span className="st-n st-pos">{r.net}</span><span className="st-n" style={{ color: '#687080' }}>{r.tax}</span>
           </div>
+        ))}
+        <div className="st-tr" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 140px', fontWeight: 600, color: '#1A2B40', borderBottom: '1.5px solid #1A2B40' }}><span className="st-mono">{p.income.refCcy}</span><span className="st-n">{p.income.totalCount}</span><span className="st-n">{p.income.totalText}</span><span /></div>
+        <div className="st-cap" style={{ marginTop: 6 }}>{u.incomeNote}</div>
+          </section>
+        )}
+        {p.card && (
+          <section>
+        <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>{u.cardSpending}</span><span className="st-cap">{u.perMonth}</span></div>
+        <div style={{ paddingTop: 8 }}><BarChart chart={p.card.chart} /></div>
+        <div className="st-cap" style={{ marginTop: 4 }}>{p.card.caption}</div>
+          </section>
         )}
       </div>
     </Page>
@@ -565,7 +576,7 @@ const Notes = ({ data, page: p }) => {
   );
 };
 
-const PAGE_COMPONENTS = { overview: Overview, allocation: Allocation, positions: Positions, liquidity: Liquidity, performance: Performance, activity: Activity, movements: Movements, notes: Notes };
+const PAGE_COMPONENTS = { overview: Overview, allocation: Allocation, positions: Positions, liquidity: Liquidity, performance: Performance, activity: Activity, income: Income, movements: Movements, notes: Notes };
 
 /** All pages of a built statement (also rendered on its own for previews/tests). */
 export const STATEMENT_CSS = CSS;

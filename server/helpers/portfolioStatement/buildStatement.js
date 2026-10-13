@@ -40,7 +40,7 @@ import { statementText, statementFormat } from './i18n.js';
 // Rows that fit the 577px content area of a page (measured on rendered PDFs)
 // positionsGroup: the rows a further asset class block costs on a shared page
 // (its heading, column header and total line)
-const ROWS = { positions: 13, positionsGroup: 4, positionsMinStart: 4, positionsHeading: 2, tradesFirst: 14, tradesNext: 13, movements: 19, pnlWithChart: 7, pnlAlone: 14 };
+const ROWS = { positions: 13, positionsGroup: 4, positionsMinStart: 4, positionsHeading: 2, tradesFirst: 14, tradesNext: 13, movements: 19, shareRows: 8, shareRowsCompact: 6, accountRows: 15, accountTable: 3, pnlWithChart: 7, pnlAlone: 14 };
 
 const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 const isIsin = (v) => typeof v === 'string' && ISIN_PATTERN.test(v.trim().toUpperCase());
@@ -171,7 +171,7 @@ export async function buildStatement({
 }) {
   const S = statementText(lang, { sectorLabels: SECTOR_LABEL });
   const F = statementFormat(lang);
-  const { num, signed, pct, signedPct, qty, compact, dateLong, dateShort, dayMonth } = F;
+  const { num, signed, pct, signedPct, qty, compact, dateLong, dateShort, dateCompact, dayMonth } = F;
 
   // ── Perimeter ──────────────────────────────────────────────────────────────
   const ownerIds = await getFilteredClientIds(currentUser, viewAsFilter || null);
@@ -336,17 +336,22 @@ export async function buildStatement({
   // ── Equities by sector / region ────────────────────────────────────────────
   const equities = positions.filter(p => p.assetClass === 'equity');
   const equityTotal = sum(equities, p => p.valueRef);
-  const groupShare = (keyOf, labelOf) => {
+  const groupShare = (keyOf, labelOf, maxRows) => {
     const g = {};
     equities.forEach(p => { const k = keyOf(p); g[k] = (g[k] || 0) + p.valueRef; });
     const rows = Object.entries(g).sort((a, b) => b[1] - a[1]);
     const max = rows.length ? rows[0][1] : 1;
-    return rows.map(([k, v]) => ({ label: labelOf(k), valueText: num(v), shareText: pct(equityTotal ? v / equityTotal : 0), barPct: max ? (v / max) * 100 : 0 }));
+    const shown = rows.length > maxRows ? rows.slice(0, maxRows - 1) : rows;
+    const rest = rows.length > maxRows ? sum(rows.slice(maxRows - 1), r => r[1]) : 0;
+    const row = (label, v) => ({ label, valueText: num(v), shareText: pct(equityTotal ? v / equityTotal : 0), barPct: max ? (v / max) * 100 : 0 });
+    return shown.map(([k, v]) => row(labelOf(k), v)).concat(rest ? [row(S.otherRows, rest)] : []);
   };
-  const sectorRows = groupShare(p => p.meta?.sector || '', k => S.sector(k));
-  const regionRows = groupShare(
+  // A taller allocation table (compact layout) leaves fewer rows below it
+  const sectorRows = (maxRows) => groupShare(p => p.meta?.sector || '', k => S.sector(k), maxRows);
+  const regionRows = (maxRows) => groupShare(
     p => (p.meta?.listingCountry && p.meta.listingCountry.length === 2 ? p.meta.listingCountry.toUpperCase() : (p.isin ? p.isin.slice(0, 2) : '')),
-    k => F.countryName(k)
+    k => F.countryName(k),
+    maxRows
   );
 
   // ── Operations of the period ───────────────────────────────────────────────
@@ -388,8 +393,10 @@ export async function buildStatement({
   const trades = operations.filter(o => TRADE_TYPES.has(o.operationType)).map(o => {
     const amount = opAmount(o);
     return {
-      date: dateShort(o.operationDate),
-      side: isTradeReversal(o) ? S.reversal(typeLabel(o.operationType)) : typeLabel(o.operationType),
+      date: dateCompact(o.operationDate),
+      side: typeLabel(o.operationType),
+      // Shown as a small second line under the side, like the ISIN under the name
+      sideNote: isTradeReversal(o) ? S.reversal : '',
       security: metaByIsin[o.isin]?.securityName || o.std?.instrumentName || o.instrumentName || o.securityName || '—',
       isin: isIsin(o.isin) ? o.isin.toUpperCase() : '',
       qty: opQuantity(o) != null ? qty(opQuantity(o)) : '—',
@@ -615,7 +622,8 @@ export async function buildStatement({
     }),
     exposureTotal: { assets: num(sum(exposure, e => e.assets)), financing: num(financing), net: num(nav), share: pct(1, 1) },
     exposureCaption: shortCcys.length ? S.exposureCaption(shortCcys.join(', '), shortCcys.length) : null,
-    sectors: sectorRows, regions: regionRows, hasEquities: equities.length > 0,
+    sectors: sectorRows(allocationRowCount > 5 ? ROWS.shareRowsCompact : ROWS.shareRows),
+    regions: regionRows(allocationRowCount > 5 ? ROWS.shareRowsCompact : ROWS.shareRows), hasEquities: equities.length > 0,
     equityTotalText: num(equityTotal)
   });
 
@@ -711,7 +719,7 @@ export async function buildStatement({
   // 03 Liquidity and financing
   const otherCcys = [...new Set([...positions.map(p => p.ccy), ...cashRows.map(c => c.h.currency)].filter(c => c && c !== refCcy))].sort();
   const cashLabel = (c) => c.account?.comment || c.h.securityName?.split(/\s+(?:STANDARD|DB|CR)\s+/)[0] || S.cashAccount;
-  pages.push({
+  const liquidityPage = {
     type: 'liquidity', section: sectionName('03'), title: S.liquidityTitle, refCcy, hasFinancing,
     kpis: [
       { label: S.kpiLiquidityCcy(refCcy), value: num(liquidityValue) },
@@ -749,7 +757,32 @@ export async function buildStatement({
       rows: costRows.map(r => ({ label: `${r.label}, ${r.ccy}`, amount: `${num(r.amount)} ${r.ccy}` })),
       totalText: `${num(costTotalRef)} ${refCcy}`
     } : null
-  });
+  };
+  // Cash accounts, then financing, fill the left column page by page (a table
+  // costs ROWS.accountTable rows of headings and total); the right column and
+  // the KPIs stay on the first page
+  const liquidityPages = [{ ...liquidityPage, cash: null, financing: null }];
+  let used = 0;
+  const place = (key, table) => {
+    let rows = table.rows;
+    let part = 0;
+    do {
+      let room = ROWS.accountRows - used - ROWS.accountTable;
+      if (room < Math.min(rows.length, 3)) {
+        liquidityPages.push({ type: 'liquidity', section: liquidityPage.section, title: `${S.liquidityTitle}${S.continued}`, refCcy, kpis: [], cash: null, financing: null, liquidInstruments: null, fxRows: [], cost: null });
+        used = 0;
+        room = ROWS.accountRows - ROWS.accountTable;
+      }
+      const take = rows.slice(0, room);
+      rows = rows.slice(take.length);
+      liquidityPages[liquidityPages.length - 1][key] = { ...table, caption: part === 0 ? table.caption : '', rows: take, last: rows.length === 0 };
+      used += ROWS.accountTable + take.length;
+      part += 1;
+    } while (rows.length);
+  };
+  place('cash', liquidityPage.cash);
+  if (liquidityPage.financing) place('financing', liquidityPage.financing);
+  pages.push(...liquidityPages);
 
   // 04 Performance
   const navChart = buildLineChart(periodNavSeries, { width: 600, height: 230, tickLabel: compact, monthLabel: F.monthAbbr });
@@ -777,21 +810,28 @@ export async function buildStatement({
 
   // 05 Activity of the period, securities transactions continue on extra pages
   const tradeChunks = trades.length ? chunk(trades, ROWS.tradesFirst, ROWS.tradesNext) : [[]];
-  const cardChart = cardTotal > 0 ? buildBarChart(cardMonths, { width: 320, height: 140, tickFormat: (v) => compact(v) }) : null;
+  const cardChart = cardTotal > 0 ? buildBarChart(cardMonths, { width: 440, height: 180, tickFormat: (v) => compact(v) }) : null;
   tradeChunks.forEach((rowsOnPage, i) => {
     pages.push({
       type: 'activity', section: sectionName('05'), title: i === 0 ? S.activityTitle : `${S.activityTitle}${S.continued}`,
       first: i === 0,
       periodCaption: S.activityPeriod(periodText, operations.length),
       counts: activityCounts,
-      trades: { caption: S.bookings(trades.length), rows: rowsOnPage },
-      income: i === 0 && incomeByCcy.length ? {
+      trades: { caption: S.bookings(trades.length), rows: rowsOnPage }
+    });
+  });
+  // Income and card spending on their own page, so the trades keep the full width
+  if (incomeByCcy.length || cardChart) {
+    pages.push({
+      type: 'income', section: sectionName('05'),
+      title: S.incomeTitle[incomeByCcy.length && cardChart ? 'both' : (cardChart ? 'card' : 'income')],
+      income: incomeByCcy.length ? {
         rows: incomeByCcy.map(r => ({ ccy: r.ccy, count: String(r.count), net: num(r.net), tax: num(r.tax || 0) })),
         totalText: num(incomeTotalRef), totalCount: String(incomeCount), refCcy
       } : null,
-      card: i === 0 && cardChart ? { chart: cardChart, caption: S.cardCaption(cardOps.length, refCcy, num(cardTotal)) } : null
+      card: cardChart ? { chart: cardChart, caption: S.cardCaption(cardOps.length, refCcy, num(cardTotal)) } : null
     });
-  });
+  }
 
   // 05 Account movements of the period's last complete month — the end month
   // when the period ends on its last days (cards and trades are on the activity page)

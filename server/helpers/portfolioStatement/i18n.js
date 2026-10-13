@@ -68,8 +68,8 @@ export const statementFormat = (lang) => {
 // ── Fixed vocabularies ───────────────────────────────────────────────────────
 
 const ASSET_CLASS = {
-  en: { fund: 'Funds', equity: 'Equities', fixed_income: 'Fixed income', structured_product: 'Structured products', monetary_products: 'Money market funds', time_deposit: 'Term deposits', private_equity: 'Private equity', private_debt: 'Private debt', commodities: 'Commodities', derivatives: 'Derivatives', cash: 'Cash', other: 'Other' },
-  fr: { fund: 'Fonds', equity: 'Actions', fixed_income: 'Obligations', structured_product: 'Produits structurés', monetary_products: 'Fonds monétaires', time_deposit: 'Dépôts à terme', private_equity: 'Private equity', private_debt: 'Dette privée', commodities: 'Matières premières', derivatives: 'Dérivés', cash: 'Espèces', other: 'Autres' }
+  en: { fund: 'Funds', etf: 'ETFs', equity: 'Equities', fixed_income: 'Fixed income', structured_product: 'Structured products', monetary_products: 'Money market funds', time_deposit: 'Term deposits', private_equity: 'Private equity', private_debt: 'Private debt', commodities: 'Commodities', derivatives: 'Derivatives', cash: 'Cash', other: 'Other' },
+  fr: { fund: 'Fonds', etf: 'ETF', equity: 'Actions', fixed_income: 'Obligations', structured_product: 'Produits structurés', monetary_products: 'Fonds monétaires', time_deposit: 'Dépôts à terme', private_equity: 'Private equity', private_debt: 'Dette privée', commodities: 'Matières premières', derivatives: 'Dérivés', cash: 'Espèces', other: 'Autres' }
 };
 
 const SECTOR = {
@@ -219,9 +219,11 @@ const EN = {
 
   // 05 Activity
   activityTitle: 'Activity',
+  incomeTitle: { both: 'Income and card spending', income: 'Income', card: 'Card spending' },
+  otherRows: 'Other',
   activityPeriod: (p, n) => `Period ${p} · ${n} ${plural(n, 'transaction', 'transactions')}`,
   bookings: (n) => `${n} ${plural(n, 'booking', 'bookings')}`,
-  reversal: (side) => `${side} reversal`,
+  reversal: 'reversal',
   cardCaption: (n, c, v) => `${n} card ${plural(n, 'payment', 'payments')}, ${c} ${v} in the period`,
   movementsTitle: (m) => `Account movements, ${m}`,
   movementsFootnote: (n, cards) => `${n} ${plural(n, 'entry', 'entries')} shown.${cards ? ` The ${cards} card ${plural(cards, 'payment', 'payments')} of the month ${plural(cards, 'is', 'are')} summarised on the activity page.` : ''} Full history for the period is available on request.`,
@@ -318,9 +320,11 @@ const FR = {
   performanceFootnote: ({ ccy, financingLeftOut, flows, measuredFrom }) => `Les rendements sont pondérés dans le temps : les dépôts et retraits sont neutralisés, ils mesurent donc le résultat des investissements.${financingLeftOut ? ' Ils portent sur les comptes d’investissement ; les facilités de crédit et les cartes en sont exclues.' : ''} Les variations en ${ccy} sont la simple différence d’actif net, financement compris, et incluent les flux.${flows ? ` ${flows} flux externe${flows > 1 ? 's' : ''} neutralisé${flows > 1 ? 's' : ''}.` : ''}${measuredFrom ? ` Les rendements sont mesurés depuis le ${measuredFrom}, première date disposant à la fois des valorisations et de l’historique des dépôts et retraits du dépositaire.` : ''}`,
 
   activityTitle: 'Activité',
+  incomeTitle: { both: 'Revenus et dépenses par carte', income: 'Revenus', card: 'Dépenses par carte' },
+  otherRows: 'Autres',
   activityPeriod: (p, n) => `Période ${p} · ${n} opération${n > 1 ? 's' : ''}`,
   bookings: (n) => `${n} écriture${n > 1 ? 's' : ''}`,
-  reversal: (side) => `${side} (annulation)`,
+  reversal: 'annulation',
   cardCaption: (n, c, v) => `${n} paiement${n > 1 ? 's' : ''} par carte, ${c} ${v} sur la période`,
   movementsTitle: (m) => `Mouvements de compte, ${m}`,
   movementsFootnote: (n, cards) => `${n} écriture${n > 1 ? 's' : ''} affichée${n > 1 ? 's' : ''}.${cards ? ` ${cards > 1 ? `Les ${cards} paiements par carte du mois sont résumés` : 'Le paiement par carte du mois est résumé'} sur la page activité.` : ''} L’historique complet de la période est disponible sur demande.`,
