@@ -137,6 +137,21 @@ describe('access: resolveScope', function () {
     const codes = new Set(docs.map(d => d.portfolioCode));
     assert.ok(codes.has('504024'));
     assert.ok(!codes.has('5040241'), 'prefix collision must not leak');
+    assert.ok(!codes.has('777001'), 'the holder\'s other accounts stay out of an account view');
+    const allocs = await AllocationsCollection.find({ $and: [await allocationsSelector(s), { __testRun: F.runId }] }).fetchAsync();
+    assert.ok(allocs.length > 0);
+    assert.ok(allocs.every(a => a.bankAccountId === F.accounts.acctA), 'allocations of the holder\'s other accounts leak');
+  });
+
+  it('view-as a wrapper account shows that account only, not the wrapper login\'s other accounts', async function () {
+    // Life-insurance case: the wrapper's holder entity and legacy login are
+    // shared with other policies; selecting one policy must not add them up.
+    const s = await resolveScope(await userOf('admin'), { type: 'account', id: F.accounts.acctWrapper });
+    const docs = await PMSHoldingsCollection.find({ $and: [await holdingsSelector(s), { __testRun: F.runId }] }).fetchAsync();
+    const codes = new Set(docs.map(d => d.portfolioCode));
+    assert.ok(codes.has('880001'));
+    assert.ok(!codes.has('880002'), 'sibling wrapper reached through the shared legacy login');
+    assert.ok(docs.some(d => d.securityName === 'Legacy row'), 'the account\'s own legacy-userId row is kept');
   });
 
   it('clientA sees own entity, joint and wrapper accounts; never B', async function () {

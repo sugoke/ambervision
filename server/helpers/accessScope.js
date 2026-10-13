@@ -55,6 +55,7 @@ function emptyScope(user, viewAs, extra = {}) {
     user, role: user?.role || null, isAdmin: false, denied: false, viewAs,
     scopedEntityId: null, entityIds: [], userIds: [], ownerIds: [],
     bankAccounts: [], bankAccountIds: [], rmIds: [],
+    accountScoped: false,
     excludeConsolidated: false,
     ...extra
   };
@@ -341,6 +342,10 @@ async function finishScope(user, viewAs, target, { rmIds, excludeConsolidated })
     bankAccounts: accounts,
     bankAccountIds: uniq(accounts.map(a => a._id)),
     rmIds: rmIds || [],
+    // A View As on one account: rows are matched by that account only. Its
+    // holder (often a life-insurance wrapper) holds other clients' accounts
+    // too, so entityId/userId would widen the view to all of them.
+    accountScoped: !!target.account,
     excludeConsolidated
   };
 }
@@ -355,8 +360,10 @@ async function finishScope(user, viewAs, target, { rmIds, excludeConsolidated })
  */
 async function ownerClause(scope, Collection) {
   const or = [];
-  if (scope.entityIds.length > 0) or.push({ entityId: { $in: scope.entityIds } });
-  if (scope.userIds.length > 0) or.push({ entityId: { $exists: false }, userId: { $in: scope.userIds } });
+  if (!scope.accountScoped) {
+    if (scope.entityIds.length > 0) or.push({ entityId: { $in: scope.entityIds } });
+    if (scope.userIds.length > 0) or.push({ entityId: { $exists: false }, userId: { $in: scope.userIds } });
+  }
 
   const byBank = new Map();
   for (const a of scope.bankAccounts) {
@@ -448,7 +455,7 @@ export async function allocationsSelector(scope) {
   const clauses = [];
   if (!scope.isAdmin) {
     const or = [];
-    if (scope.ownerIds.length > 0) or.push({ clientId: { $in: scope.ownerIds } });
+    if (scope.ownerIds.length > 0 && !scope.accountScoped) or.push({ clientId: { $in: scope.ownerIds } });
     if (scope.bankAccountIds.length > 0) or.push({ bankAccountId: { $in: scope.bankAccountIds } });
     clauses.push(or.length === 0 ? IMPOSSIBLE : (or.length === 1 ? or[0] : { $or: or }));
   }
@@ -462,7 +469,7 @@ export function ordersSelector(scope) {
   if (scope.denied) return { $and: [IMPOSSIBLE] };
   if (scope.isAdmin) return {};
   const or = [];
-  if (scope.ownerIds.length > 0) or.push({ clientId: { $in: scope.ownerIds } });
+  if (scope.ownerIds.length > 0 && !scope.accountScoped) or.push({ clientId: { $in: scope.ownerIds } });
   if (scope.bankAccountIds.length > 0) or.push({ bankAccountId: { $in: scope.bankAccountIds } });
   return { $and: [or.length === 0 ? IMPOSSIBLE : (or.length === 1 ? or[0] : { $or: or })] };
 }
