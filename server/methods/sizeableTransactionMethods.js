@@ -11,7 +11,6 @@ import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js'
 import { OPERATION_TYPES } from '../../imports/api/constants/operationTypes.js';
 import { buildRatesMap, extractBankFxRates, mergeRatesMaps } from '../../imports/api/helpers/cashCalculator.js';
 import { getSignedFlowAmountEUR } from '../../imports/api/helpers/twrCalculator.js';
-import { resolveClientRmIds } from '../../imports/api/notificationService.js';
 import { NotificationHelpers, EVENT_TYPES } from '../../imports/api/notifications.js';
 import { AuditLog } from '../../imports/api/auditLog.js';
 import {
@@ -223,14 +222,23 @@ export async function scanSizeableTransactions({ force = false } = {}) {
   const entities = await ClientEntitiesCollection.find({ _id: { $in: [...entityIds] } }).fetchAsync();
   const entityById = new Map(entities.map(e => [e._id, e]));
 
+  // The account's own RM and backups are the ones questioned, whatever their
+  // role (a superadmin can be the RM). The client's RM and assigned users only
+  // stand in when the account has none, so a former assignee on the client
+  // does not take over an account managed by someone else.
   const rmCache = new Map();
-  const rmsFor = async (bankAccountId, entityId) => {
-    const cacheKey = `${bankAccountId}|${entityId}`;
+  const rmsFor = async (account, entity) => {
+    const cacheKey = `${account?._id}|${entity?._id}`;
     if (!rmCache.has(cacheKey)) {
-      rmCache.set(cacheKey, await resolveClientRmIds({
-        clientIds: entityId ? [entityId] : [],
-        bankAccountIds: bankAccountId ? [bankAccountId] : []
-      }));
+      let ids = account ? [account.relationshipManagerId, ...(account.backupRmIds || [])].filter(Boolean) : [];
+      if (ids.length === 0 && entity) ids = [entity.relationshipManagerId, ...(entity.assignedUserIds || [])].filter(Boolean);
+      ids = [...new Set(ids)];
+      const staff = ids.length ? await UsersCollection.find(
+        { _id: { $in: ids }, role: { $ne: USER_ROLES.CLIENT } },
+        { fields: { _id: 1 } }
+      ).fetchAsync() : [];
+      const staffIds = new Set(staff.map(u => u._id));
+      rmCache.set(cacheKey, ids.filter(id => staffIds.has(id)));
     }
     return rmCache.get(cacheKey);
   };
@@ -253,7 +261,7 @@ export async function scanSizeableTransactions({ force = false } = {}) {
       bankAccountId: account?._id || null,
       entityId,
       clientName: entity ? ClientEntityHelpers.getEntityDisplayName(entity) : c.account,
-      rmIds: await rmsFor(account?._id, entityId),
+      rmIds: await rmsFor(account, entity),
       amountEUR: c.amountEUR,
       thresholdEUR: c.thresholdEUR,
       operationIds: c.operationIds,
