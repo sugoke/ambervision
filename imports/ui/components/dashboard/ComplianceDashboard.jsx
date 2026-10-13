@@ -14,8 +14,7 @@ import SizeableTransactionsModal, { consumePendingSizeableReviewId, SIZEABLE_OPE
 const STATUS_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active' },
-  { key: 'prospect', label: 'Prospects' },
-  { key: 'archived', label: 'Archived' }
+  { key: 'prospect', label: 'Prospects' }
 ];
 
 const SEVERITY_COLOR = {

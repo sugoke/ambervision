@@ -2,7 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
-import { ClientEntitiesCollection, ClientEntityHelpers } from '../../imports/api/clientEntities.js';
+import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_STATUSES } from '../../imports/api/clientEntities.js';
 import { ClientDocumentsCollection } from '../../imports/api/clientDocuments.js';
 import { BankAccountsCollection, getAccountHolderIds } from '../../imports/api/bankAccounts.js';
 import { BanksCollection } from '../../imports/api/banks.js';
@@ -19,12 +19,13 @@ import { VisitReportRequestsCollection, VISIT_REQUEST_STATUS } from '../../impor
  * Compliance dashboard: firm-wide recap of every client file.
  *
  * Runs the same rules as the client file (imports/api/complianceChecks.js)
- * over every client entity - active, prospect and archived - and returns
- * display-ready rows and totals, so the dashboard only filters and renders.
+ * over every active and prospect client entity - archived clients are no longer
+ * followed - and returns display-ready rows and totals, so the dashboard only
+ * filters and renders.
  */
 
 const COMPLIANCE_DASHBOARD_ROLES = [USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE];
-const STATUS_KEYS = ['all', 'active', 'prospect', 'archived'];
+const STATUS_KEYS = ['all', 'active', 'prospect'];
 
 const formatDate = (d) => (d
   ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -53,7 +54,7 @@ async function validateComplianceSession(sessionId) {
 
 export async function buildComplianceOverview(now = new Date()) {
   const [entities, documents, accounts, banks, staff, openVisitRequests] = await Promise.all([
-    ClientEntitiesCollection.find({}).fetchAsync(),
+    ClientEntitiesCollection.find({ status: { $ne: ENTITY_STATUSES.ARCHIVED } }).fetchAsync(),
     ClientDocumentsCollection.find({}, {
       fields: {
         userId: 1, familyMemberIndex: 1, documentType: 1, uploadedAt: 1,

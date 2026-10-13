@@ -356,10 +356,17 @@ const sortReviews = (a, b) => {
   return bDate - aDate || b.amountEUR - a.amountEUR;
 };
 
+// Reviews of archived clients are no longer followed: hidden from every list and count
+async function notArchivedSelector() {
+  const { entityIds, bankAccountIds } = await ClientEntityHelpers.getArchivedExclusion();
+  return { entityId: { $nin: entityIds }, bankAccountId: { $nin: bankAccountIds } };
+}
+
 async function statusCounts() {
+  const live = await notArchivedSelector();
   const counts = { all: 0 };
   for (const status of Object.values(SIZEABLE_STATUSES)) {
-    counts[status] = await SizeableTransactionReviewsCollection.find({ status }).countAsync();
+    counts[status] = await SizeableTransactionReviewsCollection.find({ status, ...live }).countAsync();
     counts.all += counts[status];
   }
   counts.pending = counts.all - counts[SIZEABLE_STATUSES.DONE];
@@ -391,7 +398,7 @@ Meteor.methods({
       console.error('[SizeableTransactions] Scan failed:', err);
     }
 
-    const query = {};
+    const query = await notArchivedSelector();
     if (status === 'pending') query.status = { $ne: SIZEABLE_STATUSES.DONE };
     else if (status !== 'all') query.status = status;
     if (period) query.period = period;
@@ -461,6 +468,7 @@ Meteor.methods({
 
     const recent = new Date(Date.now() - 30 * 24 * 3600 * 1000);
     const reviews = await SizeableTransactionReviewsCollection.find({
+      ...(await notArchivedSelector()),
       rmIds: user._id,
       $or: [
         { status: { $in: [SIZEABLE_STATUSES.QUESTIONED, SIZEABLE_STATUSES.ANSWERED] } },
