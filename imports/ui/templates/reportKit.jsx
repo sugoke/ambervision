@@ -46,8 +46,8 @@ html, body { margin: 0; padding: 0; background: #FFFFFF !important; }
 export const tone = (t) => (t === 'pos' ? 'st-pos' : t === 'neg' ? 'st-neg' : '');
 
 export const Header = ({ header }) => (
-  <header style={{ flex: 'none', height: 30, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-    <img src={LOGO} alt="Amberlake Partners" style={{ height: 20, width: 'auto', display: 'block' }} />
+  <header style={{ flex: 'none', height: 40, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <img src={LOGO} alt="Amberlake Partners" style={{ height: 32, width: 'auto', display: 'block' }} />
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 10.5, lineHeight: '14px', color: '#687080' }}>
       <span style={{ color: '#1A2B40', fontWeight: 500 }}>{header.clientName}</span>
       <span style={{ width: 1, height: 12, background: '#D9D3C8' }} />
@@ -59,7 +59,7 @@ export const Header = ({ header }) => (
 );
 
 export const Title = ({ page, right }) => (
-  <div style={{ flex: 'none', marginTop: 24, paddingBottom: 16, borderBottom: '1px solid #E6E1D8', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+  <div style={{ flex: 'none', marginTop: 14, paddingBottom: 16, borderBottom: '1px solid #E6E1D8', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div className="st-lbl" style={{ color: '#A9561A' }}>{page.section}</div>
       <h1 style={{ margin: 0, fontSize: 30, lineHeight: '36px', fontWeight: 300, letterSpacing: '-0.01em', color: '#1A2B40' }}>{page.title}</h1>
@@ -79,7 +79,7 @@ export const KpiStrip = ({ kpis }) => (kpis && kpis.length ? (
   </div>
 ) : null);
 
-const FOOTER_DEFAULT = { left: 'Amberlake Partners SAM · Private and confidential', middle: 'SEC registered · CCAF regulated' };
+const FOOTER_DEFAULT = { left: 'Amberlake Partners SAM · Private and confidential', middle: 'CCAF regulated · SEC registered' };
 
 export const Footer = ({ page, labels = FOOTER_DEFAULT }) => (
   <footer style={{ flex: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #E6E1D8', paddingTop: 9, fontSize: 10, lineHeight: '14px', color: '#687080' }}>

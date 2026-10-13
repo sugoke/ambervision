@@ -340,7 +340,11 @@ Meteor.methods({
           // Sections ticked in the download dialog (all when absent)
           const sectionsParam = Array.isArray(options.sections) && options.sections.length
             ? `&sections=${options.sections.filter(s => /^[a-z]+$/.test(s)).join(',')}` : '';
-          reportUrl = `${baseUrl}pdf/pms/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}${viewAsFilterParam}${accountFilterParam}${currencyParam}${sectionsParam}`;
+          // Anonymous (account numbers only) unless the name was asked for; report period
+          const anonymousParam = options.anonymous === false ? '&anonymous=0' : '&anonymous=1';
+          const isoDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+          const periodParam = `${isoDay(options.periodFrom) ? `&from=${options.periodFrom}` : ''}${isoDay(options.periodTo) ? `&to=${options.periodTo}` : ''}`;
+          reportUrl = `${baseUrl}pdf/pms/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang === 'fr' ? 'fr' : 'en'}${viewAsFilterParam}${accountFilterParam}${currencyParam}${sectionsParam}${anonymousParam}${periodParam}`;
           console.log('[PDF] Using PMS Portfolio Report template for account:', reportId, 'viewAsFilter:', options.viewAsFilter ? 'present' : 'none');
           break;
         case 'risk-analysis':

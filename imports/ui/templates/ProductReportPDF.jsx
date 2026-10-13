@@ -28,7 +28,7 @@ const Cover = ({ data }) => {
   return (
     <section className="st-page" style={{ color: '#1A2B40' }}>
       <div style={{ position: 'absolute', left: 64, top: 56, right: 64, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <img src={LOGO} alt="Amberlake Partners" style={{ height: 34, width: 'auto', display: 'block' }} />
+        <img src={LOGO} alt="Amberlake Partners" style={{ height: 54, width: 'auto', display: 'block' }} />
         <div className="st-k">{c.privateLabel}</div>
       </div>
       <div style={{ position: 'absolute', left: 64, top: 190, width: 560, display: 'flex', flexDirection: 'column' }}>

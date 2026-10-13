@@ -15,7 +15,7 @@ const EN = {
   contents: 'Contents',
   privateConfidential: 'Private and confidential',
   footerLeft: 'Amberlake Partners SAM · Private and confidential',
-  footerMiddle: 'SEC registered · CCAF regulated',
+  footerMiddle: 'CCAF regulated · SEC registered',
   coverAddress: 'Amberlake Partners SAM · 38 Boulevard des Moulins, MC 98000 Monaco · amberlakepartners.com',
 
   statusLive: 'Live', statusAutocalled: 'Autocalled', statusMatured: 'Matured', statusRedeemed: 'Redeemed', statusCalled: 'Called',
@@ -93,7 +93,7 @@ const FR = {
   contents: 'Sommaire',
   privateConfidential: 'Privé et confidentiel',
   footerLeft: 'Amberlake Partners SAM · Privé et confidentiel',
-  footerMiddle: 'Enregistré SEC · Agréé CCAF',
+  footerMiddle: 'Agréé CCAF · Enregistré SEC',
   coverAddress: 'Amberlake Partners SAM · 38 Boulevard des Moulins, MC 98000 Monaco · amberlakepartners.com',
 
   statusLive: 'En vie', statusAutocalled: 'Rappelé', statusMatured: 'Échu', statusRedeemed: 'Remboursé', statusCalled: 'Rappelé',

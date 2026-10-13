@@ -38,13 +38,18 @@ Meteor.methods({
    * server-side by buildStatement. The perimeter is resolved there exactly as
    * the on-screen PMS resolves it (getFilteredClientIds).
    */
-  async 'pms.getStatementForPdf'({ userId, pdfToken, viewAsFilter, accountId = null, currency = null, sections = null }) {
+  async 'pms.getStatementForPdf'({ userId, pdfToken, viewAsFilter, accountId = null, currency = null, sections = null, lang = 'en', anonymous = true, periodFrom = null, periodTo = null }) {
     check(userId, String);
     check(pdfToken, String);
     check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({ type: String, id: String })));
     check(accountId, Match.Maybe(String));
     check(currency, Match.Maybe(String));
     check(sections, Match.Maybe([String]));
+    check(lang, Match.Maybe(String));
+    check(anonymous, Match.Maybe(Boolean));
+    const isoDate = Match.Where(v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v));
+    check(periodFrom, Match.Maybe(isoDate));
+    check(periodTo, Match.Maybe(isoDate));
 
     const currentUser = await validatePdfToken(userId, pdfToken);
 
@@ -68,7 +73,10 @@ Meteor.methods({
     });
 
     const { buildStatement } = await import('../helpers/portfolioStatement/buildStatement.js');
-    return buildStatement({ currentUser, viewAsFilter: viewAsFilter || null, accountId, currency, sections });
+    return buildStatement({
+      currentUser, viewAsFilter: viewAsFilter || null, accountId, currency, sections,
+      lang: lang === 'fr' ? 'fr' : 'en', anonymous: anonymous !== false, periodFrom, periodTo
+    });
   }
 });
 

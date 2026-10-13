@@ -4,7 +4,7 @@
  * Builds everything the statement PDF shows — figures, formatted strings,
  * pagination and chart geometry — from the PMS data of a perimeter (a client,
  * or one of its accounts). The PDF page (PortfolioStatementPDF.jsx) only renders
- * the pages returned here.
+ * the pages returned here, in English or French (wording in ./i18n.js).
  *
  * Money vocabulary used throughout:
  *   gross assets  = securities at market value + positive cash balances
@@ -12,6 +12,10 @@
  *   NAV           = gross assets + financing
  * All amounts are converted to the statement's reference currency with the
  * custodian's own rates first (holding.bankFxRates), EOD rates otherwise.
+ *
+ * Report period: positions are valued at its end date, and the activity and
+ * performance pages cover the period only (start: 1 January of the end year
+ * unless given).
  */
 import { Meteor } from 'meteor/meteor';
 import { OPERATION_TYPES, OPERATION_CATEGORIES } from '/imports/api/constants/operationTypes';
@@ -21,20 +25,16 @@ import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isI
 import { BanksCollection } from '/imports/api/banks';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { UsersCollection } from '/imports/api/users';
-import { SecuritiesMetadataCollection, ASSET_CLASSES, SECTORS } from '/imports/api/securitiesMetadata';
+import { SecuritiesMetadataCollection, SECTORS } from '/imports/api/securitiesMetadata';
 import { CurrencyRateCacheCollection } from '/imports/api/currencyCache';
 import { PortfolioSnapshotsCollection, filterSnapshotsByBankStartDate, dedupeSnapshotsPerAccountDay } from '/imports/api/portfolioSnapshots';
 import { classifyHolding, buildCategoryKey } from '/imports/api/assetClassification';
-import { getGranularCategoryLabel } from '/imports/api/securitiesMetadata';
 import { buildRatesMap, isPureCashHolding } from '/imports/api/helpers/cashCalculator';
 import { buildConsolidatedDailyValues } from '/imports/api/helpers/twrCalculator';
 import { STATEMENT_SECTIONS } from '/imports/constants/statementSections';
 import { getFilteredClientIds } from '../../methods/rmDashboardMethods.js';
-import {
-  num, signed, pct, signedPct, qty, compact, dateLong, dateShort, dayMonth, monthYear,
-  timestamp, currencyName, countryName
-} from './format.js';
 import { buildLineChart, buildBarChart } from './charts.js';
+import { statementText, statementFormat } from './i18n.js';
 
 // Rows that fit on a page, by table (row heights follow the design)
 // Rows that fit the 577px content area of a page (measured on rendered PDFs)
@@ -45,9 +45,6 @@ const ROWS = { positions: 13, positionsGroup: 4, positionsMinStart: 4, positions
 const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 const isIsin = (v) => typeof v === 'string' && ISIN_PATTERN.test(v.trim().toUpperCase());
 
-const ASSET_CLASS_LABEL = Object.fromEntries(ASSET_CLASSES.filter(a => a.value).map(a => [a.value, a.label]));
-const assetClassLabel = (key) => ({ fund: 'Funds', equity: 'Equities', fixed_income: 'Fixed income', structured_product: 'Structured products' }[key]
-  || ASSET_CLASS_LABEL[key] || (key ? key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Other'));
 // Display order of asset classes in the statement
 // Structured products are split by protection, as in the PMS (buildCategoryKey):
 // capital guaranteed first, then partial, then conditional (barrier) protection
@@ -57,15 +54,6 @@ const SP_CATEGORY_ORDER = [
   'structured_product_equity_linked_barrier_protected',
   'structured_product_barrier_protected'
 ];
-// Short names for tight spots (allocation sub-rows, total lines); headings use
-// the PMS label (getGranularCategoryLabel)
-const SP_SHORT_LABEL = {
-  structured_product_capital_guaranteed: '100% guaranteed',
-  structured_product_partial_guarantee: 'Partial guarantee',
-  structured_product_equity_linked_barrier_protected: 'Conditional (barrier)',
-  structured_product_barrier_protected: 'Conditional (barrier)',
-  structured_product: 'Unclassified'
-};
 const spCategoryRank = (key) => {
   const i = SP_CATEGORY_ORDER.indexOf(key);
   if (i >= 0) return i;
@@ -74,22 +62,18 @@ const spCategoryRank = (key) => {
 const CLASS_ORDER = ['equity', 'fixed_income', 'structured_product', 'fund', 'monetary_products', 'time_deposit', 'private_equity', 'private_debt', 'commodities', 'derivatives', 'other'];
 const CLASS_COLORS = ['#1A2B40', '#3E5A7A', '#7D93AD', '#A9561A', '#DD772A', '#B9B2A6', '#5E6B7D', '#C9A27E', '#9AA7B6', '#4B5563', '#D9D3C8'];
 const SECTOR_LABEL = Object.fromEntries(SECTORS.filter(s => s.value).map(s => [s.value, s.label]));
+// Liquidity beyond cash balances: the alternatives to holding cash
+const LIQUID_CLASSES = new Set(['monetary_products', 'time_deposit']);
 // Prices quoted in % of nominal
 const PERCENT_PRICED = new Set(['fixed_income', 'structured_product']);
 
-const TYPE_LABEL = {
-  BUY: 'Buy', SELL: 'Sell', SUBSCRIPTION: 'Subscription', REDEMPTION: 'Redemption', DIVIDEND: 'Dividend', COUPON: 'Coupon',
-  INTEREST: 'Interest', FEE: 'Fee', TAX: 'Tax', TRANSFER_IN: 'Transfer in', TRANSFER_OUT: 'Transfer out',
-  PAYMENT_IN: 'Payment in', PAYMENT_OUT: 'Payment out', FX_TRADE: 'FX', CARD_PAYMENT: 'Card', CORPORATE_ACTION: 'Corporate action', OTHER: 'Other',
-  OPTION_PREMIUM: 'Option premium', DEPOSIT_PLACEMENT: 'Deposit placed', DEPOSIT_MATURITY: 'Deposit matured'
-};
 const ACTIVITY_GROUPS = [
-  { label: 'Card payments', types: ['CARD_PAYMENT'] },
-  { label: 'Payments and transfers', types: ['PAYMENT_IN', 'PAYMENT_OUT', 'TRANSFER_IN', 'TRANSFER_OUT'] },
-  { label: 'Dividends and coupons', types: ['DIVIDEND', 'COUPON', 'OPTION_PREMIUM'] },
-  { label: 'Interest, fees and taxes', types: ['INTEREST', 'FEE', 'TAX'] },
-  { label: 'Securities trades', types: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION'] },
-  { label: 'FX', types: ['FX_TRADE'] }
+  { key: 'CARD', types: ['CARD_PAYMENT'] },
+  { key: 'PAYMENTS', types: ['PAYMENT_IN', 'PAYMENT_OUT', 'TRANSFER_IN', 'TRANSFER_OUT'] },
+  { key: 'INCOME', types: ['DIVIDEND', 'COUPON', 'OPTION_PREMIUM'] },
+  { key: 'COSTS', types: ['INTEREST', 'FEE', 'TAX'] },
+  { key: 'TRADES', types: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION'] },
+  { key: 'FX', types: ['FX_TRADE'] }
 ];
 const TRADE_TYPES = new Set(['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION']);
 // The app's Income category (dividends, coupons, option premiums paid by
@@ -108,12 +92,15 @@ const opFees = (op) => Math.abs((op.std ? op.std.fees : (op.totalFees != null ? 
 const opTaxes = (op) => Math.abs((op.std ? op.std.taxes : (op.withholdingTax ?? op.tax ?? 0)) || 0);
 const opPrice = (op) => (op.std ? op.std.price : (op.price != null ? op.price : op.securityPrice)) ?? null;
 const opQuantity = (op) => (op.std ? op.std.quantity : op.quantity) ?? null;
-const opText = (op) => op.std?.description || op.description || op.operationTypeName || op.remark || TYPE_LABEL[op.operationType] || 'Movement';
 
+const DAY = 86400000;
 const dateKey = (d) => (d instanceof Date ? d : new Date(d)).toISOString().slice(0, 10);
+const dayStart = (d) => { const x = new Date(d); x.setUTCHours(0, 0, 0, 0); return x; };
 const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Everyone an account belongs to: holders, legacy owner and beneficial owners */
 const accountPeople = (a) => [...getAccountHolderIds(a), a.userId, a.beneficialOwnerId, ...(a.beneficialOwnerIds || [])].filter(Boolean);
+/** A life-insurance wrapper: held by the insurer, its name carries the policy */
+const isLifeInsurance = (a) => !!a && (a.accountType === 'life_insurance' || a.accountStructure === 'life_insurance');
 
 const chunk = (rows, first, next) => {
   const pages = [rows.slice(0, first)];
@@ -154,15 +141,38 @@ const makeConverter = (holdings, eurRates, refCcy) => {
 };
 
 /**
+ * Holdings on record at the end of a past day, as the PMS historical view
+ * shows them: the newest record per uniqueKey dated on or before that day.
+ */
+const holdingsAsOf = async (selector, asOf) => {
+  const latestByKey = await PMSHoldingsCollection.rawCollection().aggregate([
+    { $match: { $and: [selector, { isActive: true }, { snapshotDate: { $lt: new Date(dayStart(asOf).getTime() + DAY) } }] } },
+    { $group: { _id: '$uniqueKey', top: { $top: { sortBy: { snapshotDate: -1, version: -1 }, output: '$$ROOT' } } } }
+  ], { allowDiskUse: true }).toArray();
+  return latestByKey.map(d => d.top);
+};
+
+/**
  * @param {Object} params
  * @param {Object} params.currentUser
  * @param {Object|null} params.viewAsFilter
  * @param {String|null} params.accountId - account tab the statement was opened on
  * @param {String|null} params.currency  - reference currency asked by the PMS
  * @param {String[]|null} params.sections - STATEMENT_SECTIONS keys to include (all when empty)
+ * @param {String} [params.lang] - 'en' or 'fr'
+ * @param {Boolean} [params.anonymous] - no client or account name, account numbers only
+ * @param {String|null} [params.periodFrom] - report period start, 'YYYY-MM-DD'
+ * @param {String|null} [params.periodTo] - report period end, 'YYYY-MM-DD' (latest valuation when empty)
  * @param {Date} [params.now]
  */
-export async function buildStatement({ currentUser, viewAsFilter = null, accountId = null, currency = null, sections = null, now = new Date() }) {
+export async function buildStatement({
+  currentUser, viewAsFilter = null, accountId = null, currency = null, sections = null,
+  lang = 'en', anonymous = false, periodFrom = null, periodTo = null, now = new Date()
+}) {
+  const S = statementText(lang, { sectorLabels: SECTOR_LABEL });
+  const F = statementFormat(lang);
+  const { num, signed, pct, signedPct, qty, compact, dateLong, dateShort, dayMonth } = F;
+
   // ── Perimeter ──────────────────────────────────────────────────────────────
   const ownerIds = await getFilteredClientIds(currentUser, viewAsFilter || null);
   // One account: the viewAs account, or the account tab the report was opened on.
@@ -188,13 +198,15 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   // codes included) for the accounts above, whoever the bank file filed them under
   const byAccount = accounts.filter(a => a.bankId && a.accountNumber)
     .map(a => ({ bankId: a.bankId, portfolioCode: { $regex: `^${escapeRe(String(a.accountNumber).split('-')[0])}(-|$)` } }));
-  const holdings = await PMSHoldingsCollection.find(account
-    ? { isActive: true, isLatest: true, bankId: account.bankId, portfolioCode: account.accountNumber }
-    : {
-        isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' },
-        $or: [{ userId: { $in: ownerIds } }, { entityId: { $in: ownerIds } }, ...byAccount]
-      }
-  ).fetchAsync();
+  const holdingsSelector = account
+    ? { bankId: account.bankId, portfolioCode: account.accountNumber }
+    : { portfolioCode: { $ne: 'CONSOLIDATED' }, $or: [{ userId: { $in: ownerIds } }, { entityId: { $in: ownerIds } }, ...byAccount] };
+  // A period ending before today values the positions as they stood that day
+  const periodEnd = periodTo ? new Date(`${periodTo}T00:00:00Z`) : null;
+  const historical = periodEnd && !Number.isNaN(periodEnd.getTime()) && periodEnd < dayStart(now);
+  const holdings = historical
+    ? await holdingsAsOf(holdingsSelector, periodEnd)
+    : await PMSHoldingsCollection.find({ ...holdingsSelector, isActive: true, isLatest: true }).fetchAsync();
 
   const codes = [...new Set([...accounts.map(a => a.accountNumber), ...holdings.map(h => h.portfolioCode)].filter(Boolean))];
   const accountByCode = new Map(accounts.map(a => [`${a.bankId}|${a.accountNumber}`, a]));
@@ -207,9 +219,6 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
 
   const entities = await ClientEntitiesCollection.find({ _id: { $in: ownerIds } }).fetchAsync();
   const primaryEntity = account?.entityId ? entities.find(e => e._id === account.entityId) || entities[0] : entities[0];
-  const clientName = entities.length === 1 || account
-    ? (primaryEntity ? ClientEntityHelpers.getEntityDisplayName(primaryEntity) : (account?.name || viewAsFilter?.label || 'Portfolio'))
-    : (viewAsFilter?.label || 'Consolidated portfolio');
 
   const refCcy = currency
     || (account?.referenceCurrency)
@@ -224,8 +233,17 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
 
   const valuationDate = holdings.length
     ? new Date(Math.max(...holdings.map(h => new Date(h.snapshotDate || h.updatedAt || now).getTime())))
-    : now;
-  const yearStart = new Date(Date.UTC(valuationDate.getUTCFullYear(), 0, 1));
+    : (historical ? periodEnd : now);
+  // Period: from the date asked (never after the valuation), else 1 January
+  const askedStart = periodFrom ? new Date(`${periodFrom}T00:00:00Z`) : null;
+  const periodStart = askedStart && !Number.isNaN(askedStart.getTime()) && askedStart <= valuationDate
+    ? askedStart
+    : new Date(Date.UTC(valuationDate.getUTCFullYear(), 0, 1));
+  const periodStartIso = dateKey(periodStart);
+  // Operations up to the end of the period's last day (the valuation day when none was asked)
+  const operationsEnd = new Date(dayStart(historical ? periodEnd : (periodEnd && periodEnd > valuationDate ? periodEnd : valuationDate)).getTime() + DAY);
+  const periodEndDate = new Date(operationsEnd.getTime() - DAY);
+  const periodText = S.periodText(dateLong(periodStart), dateLong(periodEndDate));
 
   // ── Positions ──────────────────────────────────────────────────────────────
   const positions = [];
@@ -266,31 +284,39 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   const securitiesCost = sum(positions, p => p.costRef);
   const securitiesPnl = sum(positions, p => p.pnlRef);
   const weight = (v) => (gross ? v / gross : 0);
+  // Liquidity = cash balances + money-market funds + term deposits; the rest is invested
+  const moneyMarketValue = sum(positions.filter(p => p.assetClass === 'monetary_products'), p => p.valueRef);
+  const termDepositValue = sum(positions.filter(p => p.assetClass === 'time_deposit'), p => p.valueRef);
+  const liquidityValue = cashValue + moneyMarketValue + termDepositValue;
+  const investedPositions = positions.filter(p => !LIQUID_CLASSES.has(p.assetClass));
+  const investedValue = sum(investedPositions, p => p.valueRef);
+  const liquidityParts = [['cash', cashValue], ['moneyMarket', moneyMarketValue], ['termDeposits', termDepositValue]].filter(([, v]) => v > 0);
 
   // Asset classes held, in display order
   const classes = [...new Set(positions.map(p => p.assetClass))]
     .sort((a, b) => (CLASS_ORDER.indexOf(a) === -1 ? 99 : CLASS_ORDER.indexOf(a)) - (CLASS_ORDER.indexOf(b) === -1 ? 99 : CLASS_ORDER.indexOf(b)));
-  const classTotals = classes.map((key, i) => {
+  const classTotals = classes.filter(key => !LIQUID_CLASSES.has(key)).map((key, i) => {
     const value = sum(positions.filter(p => p.assetClass === key), p => p.valueRef);
-    return { key, label: assetClassLabel(key), value, color: CLASS_COLORS[i % CLASS_COLORS.length] };
+    return { key, label: S.assetClass(key), value, color: CLASS_COLORS[i % CLASS_COLORS.length] };
   });
   const cashColor = '#DD772A';
 
   // Position blocks: one per asset class, structured products one per protection category
   const positionGroups = classes.flatMap(classKey => {
     const rows = positions.filter(p => p.assetClass === classKey);
-    if (classKey !== 'structured_product') return [{ key: classKey, classKey, label: assetClassLabel(classKey), rows }];
+    if (classKey !== 'structured_product') return [{ key: classKey, classKey, label: S.assetClass(classKey), rows }];
     const cats = [...new Set(rows.map(p => p.categoryKey))].sort((a, b) => spCategoryRank(a) - spCategoryRank(b) || a.localeCompare(b));
     return cats.map(cat => ({
       key: cat, classKey,
-      label: cat === 'structured_product' ? 'Structured products, unclassified' : `Structured products · ${getGranularCategoryLabel(cat)}`,
-      subLabel: cat === 'structured_product' ? 'Unclassified' : getGranularCategoryLabel(cat),
-      shortLabel: SP_SHORT_LABEL[cat] || getGranularCategoryLabel(cat),
+      label: S.spGroupLabel(cat),
+      subLabel: cat === 'structured_product' ? S.unclassified : S.spCategory(cat),
+      shortLabel: S.spShort[cat] || S.spCategory(cat),
       rows: rows.filter(p => p.categoryKey === cat)
     }));
   });
   // Rows of the allocation table: classes, structured-product sub-rows, cash
-  const allocationRowCount = classTotals.length + positionGroups.filter(g => g.subLabel).length + (cashValue > 0 ? 1 : 0);
+  const allocationRowCount = classTotals.length + positionGroups.filter(g => g.subLabel).length
+    + (liquidityValue > 0 ? 1 + (liquidityParts.length > 1 ? liquidityParts.length : 0) : 0);
 
   // ── Currency exposure (assets net of financing, per currency) ──────────────
   const ccyMap = {};
@@ -317,13 +343,13 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     const max = rows.length ? rows[0][1] : 1;
     return rows.map(([k, v]) => ({ label: labelOf(k), valueText: num(v), shareText: pct(equityTotal ? v / equityTotal : 0), barPct: max ? (v / max) * 100 : 0 }));
   };
-  const sectorRows = groupShare(p => p.meta?.sector || '', k => SECTOR_LABEL[k] || 'Unclassified');
+  const sectorRows = groupShare(p => p.meta?.sector || '', k => S.sector(k));
   const regionRows = groupShare(
     p => (p.meta?.listingCountry && p.meta.listingCountry.length === 2 ? p.meta.listingCountry.toUpperCase() : (p.isin ? p.isin.slice(0, 2) : '')),
-    k => countryName(k)
+    k => F.countryName(k)
   );
 
-  // ── Operations (year to date) ──────────────────────────────────────────────
+  // ── Operations of the period ───────────────────────────────────────────────
   // Operations are matched by bank account (bank + account number), as banks
   // book them under sub-account codes ("5040241-1") and older ones carry a
   // legacy owner id only. The accounts themselves are already in scope.
@@ -332,13 +358,15 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     .map(([bankId, code]) => [`${bankId}|${code}`, { bankId, code }])).values()];
   const operationAccounts = accountKeys.map(({ bankId, code }) => ({ bankId, portfolioCode: { $regex: `^${escapeRe(String(code).split('-')[0])}(-|$)` } }));
   const operations = operationAccounts.length ? await PMSOperationsCollection.find({
-    isActive: true, $or: operationAccounts, operationDate: { $gte: yearStart, $lte: new Date(valuationDate.getTime() + 86400000) }
+    isActive: true, $or: operationAccounts, operationDate: { $gte: periodStart, $lt: operationsEnd }
   }, { sort: { operationDate: -1 } }).fetchAsync() : [];
   // Securities traded but no longer held: their names come from the reference data too
   const tradedIsins = [...new Set(operations.map(o => String(o.isin || '').toUpperCase()).filter(i => isIsin(i) && !metaByIsin[i]))];
   if (tradedIsins.length) {
     (await SecuritiesMetadataCollection.find({ isin: { $in: tradedIsins } }).fetchAsync()).forEach(m => { metaByIsin[m.isin] = m; });
   }
+  const typeLabel = (t) => S.type(t) || S.type('OTHER');
+  const opText = (op) => op.std?.description || op.description || op.operationTypeName || op.remark || S.type(op.operationType) || S.movement;
 
   const income = operations.filter(isIncome);
   const incomeByCcy = Object.values(income.reduce((m, o) => {
@@ -361,7 +389,7 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     const amount = opAmount(o);
     return {
       date: dateShort(o.operationDate),
-      side: isTradeReversal(o) ? `${TYPE_LABEL[o.operationType]} reversal` : TYPE_LABEL[o.operationType],
+      side: isTradeReversal(o) ? S.reversal(typeLabel(o.operationType)) : typeLabel(o.operationType),
       security: metaByIsin[o.isin]?.securityName || o.std?.instrumentName || o.instrumentName || o.securityName || '—',
       isin: isIsin(o.isin) ? o.isin.toUpperCase() : '',
       qty: opQuantity(o) != null ? qty(opQuantity(o)) : '—',
@@ -373,25 +401,33 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     };
   });
 
+  // Card spending per month of the period
   const cardOps = operations.filter(o => o.operationType === 'CARD_PAYMENT');
-  const cardMonths = Array.from({ length: valuationDate.getUTCMonth() + 1 }, (_, m) => {
-    const spent = sum(cardOps.filter(o => new Date(o.operationDate).getUTCMonth() === m), o => fx.convert(Math.abs(opAmount(o)), opCurrency(o) || refCcy));
-    return { label: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m], value: spent, valueText: spent ? compact(spent) : '', positive: true };
+  const periodMonths = [];
+  for (let m = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth(), 1)); m < operationsEnd; m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))) {
+    periodMonths.push(m);
+  }
+  const spansYears = periodMonths.length && periodMonths[0].getUTCFullYear() !== periodMonths[periodMonths.length - 1].getUTCFullYear();
+  const monthKey = (d) => { const x = new Date(d); return `${x.getUTCFullYear()}-${x.getUTCMonth()}`; };
+  const cardMonths = periodMonths.slice(-12).map(m => {
+    const spent = sum(cardOps.filter(o => monthKey(o.operationDate) === monthKey(m)), o => fx.convert(Math.abs(opAmount(o)), opCurrency(o) || refCcy));
+    const label = `${F.monthAbbr(m.getUTCMonth())}${spansYears ? ` ${String(m.getUTCFullYear()).slice(2)}` : ''}`;
+    return { label, value: spent, valueText: spent ? compact(spent) : '', positive: true };
   });
-  const cardTotal = sum(cardMonths, m => m.value);
+  const cardTotal = sum(cardOps, o => fx.convert(Math.abs(opAmount(o)), opCurrency(o) || refCcy));
 
-  const activityCounts = ACTIVITY_GROUPS.map(g => ({ label: g.label, count: operations.filter(o => g.types.includes(o.operationType)).length }))
-    .concat([{ label: 'Other', count: operations.filter(o => !ACTIVITY_GROUPS.some(g => g.types.includes(o.operationType))).length }])
+  const activityCounts = ACTIVITY_GROUPS.map(g => ({ label: S.activity[g.key], count: operations.filter(o => g.types.includes(o.operationType)).length }))
+    .concat([{ label: S.activity.OTHER, count: operations.filter(o => !ACTIVITY_GROUPS.some(g => g.types.includes(o.operationType))).length }])
     .filter(g => g.count > 0);
 
-  // Interest and fees on borrowing, year to date
+  // Interest and fees on borrowing in the period
   const financingCodes = new Set(accounts.filter(a => !isInvestmentAccount(a)).map(a => String(a.accountNumber).split('-')[0]));
   const costOps = operations.filter(o => (o.operationType === 'INTEREST' && opAmount(o) < 0)
     || (o.operationType === 'FEE' && financingCodes.has(String(o.portfolioCode || '').split('-')[0])));
   const costRows = Object.values(costOps.reduce((m, o) => {
     const c = opCurrency(o) || refCcy;
     const key = `${o.operationType}|${c}`;
-    if (!m[key]) m[key] = { label: o.operationType === 'INTEREST' ? `Debit interest` : 'Fees on financing accounts', ccy: c, amount: 0 };
+    if (!m[key]) m[key] = { label: o.operationType === 'INTEREST' ? S.debitInterest : S.financingFees, ccy: c, amount: 0 };
     m[key].amount += -Math.abs(opAmount(o));
     return m;
   }, {}));
@@ -412,22 +448,27 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     for (const p of navSeries) { if (p.date <= iso) best = p; else break; }
     return best;
   };
+  // The chart shows the period, from the last valuation at or before its start
+  const navStart = navAt(periodStart);
+  const periodNavSeries = navSeries.filter(p => p.date > periodStartIso || (navStart && p.date === navStart.date));
 
   let twr = null;
   try {
     const { computeTWR } = await import('../../methods/performanceMethods.js');
     if (codes.length) {
-      twr = await computeTWR({ codes, portfolioCode: account ? account.accountNumber : null, currency: refCcy, now: valuationDate, label: 'statement' });
+      twr = await computeTWR({ codes, portfolioCode: account ? account.accountNumber : null, currency: refCcy, now: valuationDate, label: 'statement', customStart: periodStart });
     }
   } catch (e) {
     console.error('[STATEMENT] TWR failed:', e.message);
   }
-  const PERIODS = [['1M', '1 month'], ['3M', '3 months'], ['6M', '6 months'], ['YTD', 'Year to date'], ['1Y', '1 year'], ['ALL', 'Since inception']];
+  // The report period first, then the standard periods that lie inside it
+  const PERIODS = ['CUSTOM', '1M', '3M', '6M', 'YTD', '1Y', 'ALL'];
   const navEnd = navSeries[navSeries.length - 1] || null;
   const seenStarts = new Set();
-  const periodRows = PERIODS.map(([key, label]) => {
+  const periodRows = PERIODS.map((key) => {
     const p = twr?.periods?.[key];
     if (!p || !p.hasData) return null;
+    if (key !== 'CUSTOM' && p.startDate < periodStartIso) return null;
     // Returns start where the history allows it (first valuation, or start of the
     // custodian's operations history); periods reduced to the same start are shown once
     const measuredFrom = p.measuredFrom || p.startDate;
@@ -437,93 +478,116 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     const start = navAt(measuredFrom) || navSeries[0];
     const change = start && navEnd ? navEnd.value - start.value : null;
     const shortened = key !== 'ALL' && measuredFrom > p.startDate;
+    const label = key === 'CUSTOM' ? S.periodLabels.PERIOD : (shortened ? S.since(dateShort(measuredFrom)) : S.periodLabels[key]);
     return {
-      key, label: shortened ? `Since ${dateShort(measuredFrom)}` : label, shortened, fromText: `from ${dateShort(start ? start.date : p.startDate)}`, change, startDate: start ? start.date : null,
+      key, label, shortened, fromText: S.from(dateShort(start ? start.date : p.startDate)), change, startDate: start ? start.date : null,
       startText: start ? num(start.value) : '—',
       changeText: change != null ? signed(change) : '—', changePositive: (change || 0) >= 0,
-      twrText: p.twrFormatted || signedPct(p.twr), twrPositive: (p.twr || 0) >= 0
+      twrText: signedPct(p.twr), twrPositive: (p.twr || 0) >= 0
     };
   }).filter(Boolean);
-  const monthly = (twr?.monthlyReturns || []).slice(-12);
+  const periodRow = periodRows.find(r => r.key === 'CUSTOM') || null;
+  const monthly = (twr?.periodCalendar?.monthly || []).slice(-12);
   const monthlyChart = buildBarChart(monthly.map(m => ({
-    label: m.label.slice(0, 3) + (m.isPartial ? '*' : ''), value: m.twr * 100, valueText: m.twrFormatted, positive: m.isPositive
-  })), { width: 360, height: 150, tickFormat: (v) => `${v}%` });
-  const yearly = (twr?.yearlyReturns || []).map(y => ({ label: y.label, twrText: y.twrFormatted, isPositive: y.isPositive, partial: y.isPartial }));
+    label: `${F.monthAbbr(Number(m.key.slice(5, 7)) - 1)}${m.isPartial ? '*' : ''}`, value: m.twr * 100, valueText: signedPct(m.twr), positive: m.isPositive
+  })), { width: 360, height: 150, tickFormat: (v) => F.pctOf(v, Number.isInteger(v) ? 0 : 1) });
+  const yearly = (twr?.periodCalendar?.yearly || []).map(y => ({ label: y.label, twrText: signedPct(y.twr), isPositive: y.isPositive, partial: y.isPartial }));
 
-  const ytdRow = periodRows.find(r => r.key === 'YTD') || null;
+  // ── Title: the client or account, or account numbers only when anonymous ────
+  const accountCodes = [...new Set(holdings.map(h => h.portfolioCode).concat(accounts.map(a => a.accountNumber)).filter(Boolean))].sort();
+  const namedTitle = () => {
+    // A life-insurance wrapper is titled by its policy (the account's name),
+    // not by the insurer that holds it: "UTMOST · Policy 2404-154427 STA"
+    if (isLifeInsurance(account) && account.name) {
+      const insurer = primaryEntity ? ClientEntityHelpers.getEntityDisplayName(primaryEntity) : '';
+      const name = String(account.name).trim();
+      return insurer && name.toUpperCase().startsWith(insurer.toUpperCase()) && name.length > insurer.length
+        ? `${insurer} · ${S.policy} ${name.slice(insurer.length).trim()}`
+        : name;
+    }
+    if (entities.length === 1 || account) {
+      return primaryEntity ? ClientEntityHelpers.getEntityDisplayName(primaryEntity) : (account?.name || viewAsFilter?.label || S.titlePortfolio);
+    }
+    return viewAsFilter?.label || S.titleConsolidated;
+  };
+  const anonymousTitle = () => {
+    if (account) return S.titleAccount(account.accountNumber);
+    return accountCodes.length === 1 ? S.titleAccount(accountCodes[0]) : S.titleConsolidated;
+  };
+  const clientName = anonymous ? anonymousTitle() : namedTitle();
 
   // ── Page model ─────────────────────────────────────────────────────────────
-  const ccyWord = refCcy;
   const header = {
     clientName,
-    valuationText: `Valuation ${dateLong(valuationDate)}`,
-    currencyText: `Reference currency ${ccyWord}`
+    ccy: refCcy,
+    valuationText: S.headerValuation(dateLong(valuationDate)),
+    currencyText: S.headerCurrency(refCcy)
   };
-  const accountCodes = [...new Set(holdings.map(h => h.portfolioCode).concat(accounts.map(a => a.accountNumber)).filter(Boolean))].sort();
+  const sectionName = (n) => `${n} · ${S.sections[STATEMENT_SECTIONS.find(s => s.n === n).key]}`;
   const pages = [];
 
   // 01 Overview
   const top5 = positions.slice(0, 5);
   pages.push({
-    type: 'overview', section: '01 · Overview', title: 'Portfolio at a glance',
-    caption: `${accountCodes.length > 1 ? 'Consolidated view of accounts' : 'Account'} ${accountCodes.join(', ')}${custodians.length ? `, held at ${custodianText}` : ''}`,
-    navInt: num(Math.trunc(nav), 0), navDec: `.${Math.abs(nav).toFixed(2).split('.')[1]}`, navSign: nav < 0 ? '−' : '',
-    ytdChangeText: ytdRow && ytdRow.change != null ? signed(ytdRow.change) : null,
-    ytdChangePositive: ytdRow ? (ytdRow.change || 0) >= 0 : true,
-    ytdChangeLabel: ytdRow && ytdRow.change != null ? `change since ${dateLong(ytdRow.startDate)}` : null,
+    type: 'overview', section: sectionName('01'), title: S.overviewTitle,
+    caption: S.overviewCaption(accountCodes, custodians.length ? custodianText : null),
+    navInt: num(Math.trunc(nav), 0), navDec: `${F.decimalSep}${Math.abs(nav).toFixed(2).split('.')[1]}`, navSign: nav < 0 ? '−' : '',
+    ytdChangeText: periodRow && periodRow.change != null ? signed(periodRow.change) : null,
+    ytdChangePositive: periodRow ? (periodRow.change || 0) >= 0 : true,
+    ytdChangeLabel: periodRow && periodRow.change != null ? S.changeSince(dateLong(periodRow.startDate)) : null,
     grossText: num(gross), financingText: num(financing), hasFinancing,
-    positionsText: `${positions.length} position${positions.length === 1 ? '' : 's'}, ${exposure.length} currenc${exposure.length === 1 ? 'y' : 'ies'}`,
+    positionsText: S.positionsCount(positions.length, exposure.length),
     waterfall: hasFinancing ? {
       grossText: num(gross), financingText: num(financing), navText: num(nav),
-      securitiesPct: gross ? (securitiesValue / gross) * 100 : 0, cashPct: gross ? (cashValue / gross) * 100 : 0,
+      securitiesPct: gross ? (investedValue / gross) * 100 : 0, cashPct: gross ? (liquidityValue / gross) * 100 : 0,
       navPct: gross ? Math.max(0, (nav / gross) * 100) : 0,
       legend: [
-        { color: '#1A2B40', text: `Securities ${num(securitiesValue)}` },
-        { color: '#DD772A', text: `Cash ${num(cashValue)}` },
-        { color: '#C76A5A', text: 'Credit facilities and card' }
+        { color: '#1A2B40', text: S.legendSecurities(num(investedValue)) },
+        { color: '#DD772A', text: S.legendLiquidity(num(liquidityValue)) },
+        { color: '#C76A5A', text: S.legendFinancing }
       ]
     } : null,
     kpis: [
-      { label: 'Unrealised P&L · securities', value: signed(securitiesPnl), tone: securitiesPnl >= 0 ? 'pos' : 'neg', caption: `${signedPct(securitiesCost ? securitiesPnl / securitiesCost : 0)} over a cost of ${num(securitiesCost)}` },
-      hasFinancing
-        ? { label: 'Leverage', value: `${(nav > 0 ? gross / nav : 0).toFixed(2)}×`, caption: 'Gross assets over net asset value' }
-        : { label: 'Cash', value: num(cashValue), caption: `${pct(weight(cashValue))} of the portfolio` },
-      hasFinancing
-        ? { label: 'Loan to value', value: pct(gross ? -financing / gross : 0, 1), caption: 'Financing drawn over gross assets' }
-        : { label: 'Securities', value: num(securitiesValue), caption: `${positions.length} positions` },
-      { label: `Income received ${valuationDate.getUTCFullYear()}`, value: num(incomeTotalRef), caption: `${incomeCount} payment${incomeCount === 1 ? '' : 's'}, net of withholding tax` }
+      { label: S.kpiPnl, value: signed(securitiesPnl), tone: securitiesPnl >= 0 ? 'pos' : 'neg', caption: S.kpiPnlCaption(signedPct(securitiesCost ? securitiesPnl / securitiesCost : 0), num(securitiesCost)) },
+      {
+        label: S.liquidity, value: num(liquidityValue),
+        // The cash itself stays visible (full split on the allocation and liquidity pages)
+        caption: liquidityParts.length > 1 ? S.ofWhichCash(compact(cashValue)) : S.liquidityShare(pct(weight(liquidityValue)))
+      },
+      { label: S.kpiSecurities, value: num(investedValue), caption: S.kpiSecuritiesCaption(investedPositions.length) },
+      { label: S.kpiIncome, value: num(incomeTotalRef), caption: S.kpiIncomeCaption(incomeCount) }
     ],
     largest: {
-      caption: `top ${top5.length} ${pct(weight(sum(top5, p => p.valueRef)))} of gross`,
+      caption: S.largestCaption(top5.length, pct(weight(sum(top5, p => p.valueRef)))),
       rows: top5.map(p => ({ name: p.name, shareText: pct(weight(p.valueRef)), barPct: top5[0] && top5[0].valueRef > 0 ? Math.max(0, Math.min(100, (p.valueRef / top5[0].valueRef) * 98.6)) : 0 }))
     },
     exposure: {
       rows: exposure.map(e => {
         const share = nav ? e.net / nav : 0;
-        return { ccy: e.ccy, text: signedPct(share, 1).replace(/(\.\d)0?%$/, '$1%'), negative: share < 0,
+        return { ccy: e.ccy, text: signedPct(share, 1), negative: share < 0,
           // Axis at 28% of the track: shorts extend left (28% max), longs right
           barLeftPct: share < 0 ? 28 - Math.min(28, (Math.abs(share) / maxExposure) * 70) : 28,
           barWidthPct: share < 0 ? Math.min(28, (Math.abs(share) / maxExposure) * 70) : (Math.abs(share) / maxExposure) * 70 };
       }),
-      caption: shortCcys.length ? `After financing the portfolio is net short ${shortCcys.join(', ')}.` : 'Currency exposure of the assets, net of financing.'
+      caption: shortCcys.length ? S.exposureShort(shortCcys.join(', ')) : S.exposureLong
     },
-    periods: periodRows.filter(r => ['1M', '3M', '6M', 'YTD'].includes(r.key))
+    periods: periodRows.filter(r => ['CUSTOM', '1M', '3M', '6M', 'YTD'].includes(r.key)).slice(0, 4)
   });
 
   // 02 Allocation
   const circumference = 2 * Math.PI * 68;
   let offset = 0;
-  const donut = classTotals.concat(cashValue > 0 ? [{ key: 'cash', label: 'Cash', value: cashValue, color: cashColor }] : []).map(c => {
+  const donut = classTotals.concat(liquidityValue > 0 ? [{ key: 'liquidity', label: S.liquidity, value: liquidityValue, color: cashColor }] : []).map(c => {
     const len = gross ? (c.value / gross) * circumference : 0;
     const seg = { color: c.color, dash: `${len.toFixed(2)} ${circumference.toFixed(2)}`, offset: (-offset).toFixed(2) };
     offset += len;
     return seg;
   });
   pages.push({
-    type: 'allocation', section: '02 · Allocation', title: 'Allocation and exposure',
-    caption: `Weights in % of gross assets unless stated · Gross assets ${refCcy} ${num(gross)}`,
-    compact: allocationRowCount > 6,
-    donutSize: allocationRowCount > 6 ? 156 : 188,
+    type: 'allocation', section: sectionName('02'), title: S.allocationTitle,
+    caption: S.allocationCaption(refCcy, num(gross)),
+    compact: allocationRowCount > 5,
+    donutSize: allocationRowCount > 5 ? 156 : 188,
     donut: { segments: donut, financingArc: hasFinancing ? `${((Math.min(1, -financing / gross)) * 2 * Math.PI * 86).toFixed(2)} ${(2 * Math.PI * 86).toFixed(2)}` : null, centerText: compact(gross) },
     allocationRows: classTotals.flatMap(c => {
       const row = { label: c.label, color: c.color, valueText: num(c.value), weightText: pct(weight(c.value)) };
@@ -534,23 +598,23 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
         return { label: g.shortLabel, sub: true, valueText: num(v), weightText: pct(weight(v)) };
       })] : [row];
     })
-      .concat(cashValue > 0 ? [{ label: 'Cash', color: cashColor, valueText: num(cashValue), weightText: pct(weight(cashValue)) }] : []),
-    grossText: num(gross), hasFinancing, financingText: num(financing), financingWeight: pct(weight(financing)),
+      // Liquidity, with cash, money-market funds and term deposits under it
+      .concat(liquidityValue > 0 ? [{ label: S.liquidity, color: cashColor, valueText: num(liquidityValue), weightText: pct(weight(liquidityValue)) }] : [])
+      .concat(liquidityParts.length > 1 ? liquidityParts.map(([k, v]) => ({ label: S.liquidityRows[k], sub: true, valueText: num(v), weightText: pct(weight(v)) })) : []),
+    grossText: num(gross), grossWeight: pct(1), hasFinancing, financingText: num(financing), financingWeight: pct(weight(financing)),
     navText: num(nav), navWeight: pct(weight(nav)),
     exposureRows: exposure.map(e => {
       const share = nav ? e.net / nav : 0;
       return {
         ccy: e.ccy, assetsText: num(e.assets), financingText: num(e.financing), financingZero: !e.financing,
-        netText: num(e.net), negative: e.net < 0, shareText: `${num(share * 100, 1)}%`,
+        netText: num(e.net), negative: e.net < 0, shareText: pct(share, 1),
         // Bar on an axis at 18px: shorts extend left (17px max), longs right (48px max)
         barLeft: e.net < 0 ? 18 - Math.min(17, (Math.abs(share) / maxExposure) * 48) : 19,
         barWidth: e.net < 0 ? Math.min(17, (Math.abs(share) / maxExposure) * 48) : Math.min(48, (Math.abs(share) / maxExposure) * 48)
       };
     }),
-    exposureTotal: { assets: num(sum(exposure, e => e.assets)), financing: num(financing), net: num(nav) },
-    exposureCaption: shortCcys.length
-      ? `Financing drawn in ${shortCcys.join(', ')} exceeds the assets held in ${shortCcys.length > 1 ? 'those currencies' : 'that currency'}: the portfolio is net short ${shortCcys.join(', ')}.`
-      : null,
+    exposureTotal: { assets: num(sum(exposure, e => e.assets)), financing: num(financing), net: num(nav), share: pct(1, 1) },
+    exposureCaption: shortCcys.length ? S.exposureCaption(shortCcys.join(', '), shortCcys.length) : null,
     sectors: sectorRows, regions: regionRows, hasEquities: equities.length > 0,
     equityTotalText: num(equityTotal)
   });
@@ -573,12 +637,14 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
       // Parsers store percentage prices as decimals (1.0 = 100%, CLAUDE.md); the
       // holding's priceType says which, never the size of the number.
       const asPercent = h.priceType === 'percentage';
-      const fmtPrice = (v) => (Number.isFinite(v) && v ? (asPercent ? `${num(v * 100, 2)}%` : num(v, 2)) : '—');
+      const fmtPrice = (v) => (Number.isFinite(v) && v ? (asPercent ? F.pctOf(v * 100, 2) : num(v, 2)) : '—');
       return {
         name: p.name, isin: p.isin || '', ccy: p.ccy || '',
         qty: qty(h.quantity),
         cost: fmtPrice(cost),
         price: fmtPrice(price),
+        // The day the custodian's price was struck (none stated: no date shown)
+        priceDate: h.priceDate && Number.isFinite(price) && price ? dateShort(h.priceDate) : '',
         valueCcy: num(p.valueCcy), valueRef: num(p.valueRef),
         pnl: signed(p.pnlRef), pnlPct: p.costRef ? signedPct(p.pnlRef / p.costRef) : '—', pnlPositive: p.pnlRef >= 0,
         weight: pct(weight(p.valueRef))
@@ -586,17 +652,17 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     });
     const label = group.label;
     const pnlText = `${signed(totalPnl)} (${signedPct(totalCost ? totalPnl / totalCost : 0)})`;
-    const classLabel = assetClassLabel(group.classKey);
+    const classLabel = S.assetClass(group.classKey);
     const subLabel = group.subLabel || null; // protection category of a structured-product block
     const block = {
       key, label, isPercent, classKey: group.classKey, classLabel, subLabel,
       kpis: [
-        { label: `Market value, ${refCcy}`, value: num(total) },
-        { label: `Unrealised P&L, ${refCcy}`, value: pnlText, tone: totalPnl >= 0 ? 'pos' : 'neg' },
-        { label: 'Positions', value: String(rows.length) }
+        { label: S.kpiMarketValue(refCcy), value: num(total) },
+        { label: S.kpiUnrealised(refCcy), value: pnlText, tone: totalPnl >= 0 ? 'pos' : 'neg' },
+        { label: S.kpiPositions, value: String(rows.length) }
       ],
-      summaryText: `${num(total)} ${refCcy} · P&L ${pnlText} · ${rows.length} position${rows.length === 1 ? '' : 's'}`,
-      total: { label: subLabel ? `Total ${group.shortLabel.toLowerCase()}` : `Total ${label.toLowerCase()}`, valueRef: num(total), pnl: signed(totalPnl), pnlPct: totalCost ? signedPct(totalPnl / totalCost) : '—', pnlPositive: totalPnl >= 0, weight: pct(weight(total)) }
+      summaryText: S.blockSummary(num(total), refCcy, pnlText, rows.length),
+      total: { label: S.total(subLabel ? group.shortLabel : label), valueRef: num(total), pnl: signed(totalPnl), pnlPct: totalCost ? signedPct(totalPnl / totalCost) : '—', pnlPositive: totalPnl >= 0, weight: pct(weight(total)) }
     };
     let remaining = display;
     let part = 0;
@@ -625,39 +691,35 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     const labels = [...new Set(pg.groups.map(g => g.classLabel))];
     const groups = pg.groups.map(g => ({
       key: g.key, isPercent: g.isPercent, rows: g.rows,
-      heading: `${g.subLabel && labels.length === 1 ? g.subLabel : g.label}${g.part > 0 ? ' (continued)' : ''}`,
+      heading: `${g.subLabel && labels.length === 1 ? g.subLabel : g.label}${g.part > 0 ? S.continued : ''}`,
       summaryText: g.part === 0 ? g.summaryText : null,
       total: g.complete ? g.total : null
     }));
     const single = pg.groups.length === 1 ? pg.groups[0] : null;
     const lastGroup = pg.groups[pg.groups.length - 1];
     pages.push({
-      type: 'positions', section: '03 · Positions', refCcy,
-      title: labels.length === 1 ? `${labels[0]}${pg.groups[0].part > 0 ? ' (continued)' : ''}`
-        : labels.length === 2 ? `${labels[0]} and ${labels[1].toLowerCase()}` : 'Other holdings',
+      type: 'positions', section: sectionName('03'), refCcy,
+      title: labels.length === 1 ? `${labels[0]}${pg.groups[0].part > 0 ? S.continued : ''}`
+        : labels.length === 2 ? `${labels[0]} ${S.and} ${labels[1].toLowerCase()}` : S.otherHoldings,
       kpis: single && single.part === 0 ? single.kpis : null,
       showHeadings: !single || !!single.subLabel,
       groups,
-      footnote: lastGroup.complete
-        ? `Closing prices of ${dateLong(valuationDate)} supplied by the custodian. ${refCcy} values at the custodian's exchange rates (see liquidity page). ${pg.groups.some(g => g.isPercent) ? 'Bonds and structured products priced in % of nominal. ' : ''}Sorted by market value.`
-        : null
+      footnote: lastGroup.complete ? S.positionsFootnote(refCcy, pg.groups.some(g => g.isPercent)) : null
     });
   });
 
   // 03 Liquidity and financing
   const otherCcys = [...new Set([...positions.map(p => p.ccy), ...cashRows.map(c => c.h.currency)].filter(c => c && c !== refCcy))].sort();
-  const cashLabel = (c) => c.account?.comment || c.h.securityName?.split(/\s+(?:STANDARD|DB|CR)\s+/)[0] || 'Cash account';
+  const cashLabel = (c) => c.account?.comment || c.h.securityName?.split(/\s+(?:STANDARD|DB|CR)\s+/)[0] || S.cashAccount;
   pages.push({
-    type: 'liquidity', section: '03 · Positions', title: 'Liquidity and financing', refCcy, hasFinancing,
+    type: 'liquidity', section: sectionName('03'), title: S.liquidityTitle, refCcy, hasFinancing,
     kpis: [
-      { label: `Cash, ${refCcy}`, value: num(cashValue) },
-      ...(hasFinancing ? [
-        { label: `Financing, ${refCcy}`, value: num(financing), tone: 'neg' },
-        { label: 'Loan to value', value: pct(gross ? -financing / gross : 0, 1) }
-      ] : [])
+      { label: S.kpiLiquidityCcy(refCcy), value: num(liquidityValue) },
+      ...(liquidityParts.length > 1 ? [{ label: S.kpiCashCcy(refCcy), value: num(cashValue) }] : []),
+      ...(hasFinancing ? [{ label: S.kpiFinancingCcy(refCcy), value: num(financing), tone: 'neg' }] : [])
     ],
     cash: {
-      caption: `${assetsCash.length} account${assetsCash.length === 1 ? '' : 's'}`,
+      caption: S.cashAccountsCount(assetsCash.length),
       rows: assetsCash.sort((a, b) => b.valueRef - a.valueRef).map(c => ({
         label: cashLabel(c), account: c.h.portfolioCode, ccy: c.h.currency || '', balance: num(c.h.marketValueOriginalCurrency ?? c.h.quantity),
         valueRef: num(c.valueRef), weight: pct(weight(c.valueRef))
@@ -666,90 +728,99 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     },
     financing: hasFinancing ? {
       caption: accounts.filter(a => !isInvestmentAccount(a) && a.authorizedOverdraft)
-        .map(a => `${a.comment || 'Facility'} ${a.accountNumber}, limit ${a.referenceCurrency || ''} ${num(a.authorizedOverdraft, 0)}`).join(' · ') || null,
+        .map(a => S.facilityLimit(a.comment || S.facility, a.accountNumber, a.referenceCurrency || '', num(a.authorizedOverdraft, 0))).join(' · ') || null,
       rows: financingCash.sort((a, b) => a.valueRef - b.valueRef).map(c => ({
         label: cashLabel(c), account: c.h.portfolioCode, ccy: c.h.currency || '', balance: num(c.h.marketValueOriginalCurrency ?? c.h.quantity),
         valueRef: num(c.valueRef), weight: pct(weight(c.valueRef))
       })),
       totalText: num(financing), totalWeight: pct(weight(financing))
     } : null,
+    // Money-market funds and term deposits (also listed with the positions)
+    liquidInstruments: moneyMarketValue + termDepositValue > 0 ? {
+      rows: positions.filter(p => LIQUID_CLASSES.has(p.assetClass)).map(p => ({ name: p.name, ccy: p.ccy || '', valueRef: num(p.valueRef), weight: pct(weight(p.valueRef)) })),
+      totalText: num(moneyMarketValue + termDepositValue), totalWeight: pct(weight(moneyMarketValue + termDepositValue))
+    } : null,
     fxRows: otherCcys.map(c => {
       const r = fx.rate(c, refCcy);
-      return { ccy: c, name: currencyName(c).replace(/ \([A-Z]{3}\)$/, ''), rateText: r ? `${r.rate.toFixed(4)} ${refCcy}` : 'n/a', source: r?.source === 'custodian' ? 'custodian' : 'market' };
+      return { ccy: c, name: F.currencyName(c).replace(/ \([A-Z]{3}\)$/, ''), rateText: r ? `${num(r.rate, 4)} ${refCcy}` : '—', source: r?.source === 'custodian' ? 'custodian' : 'market' };
     }),
-    fxCaption: `${dateLong(valuationDate)} · custodian rates where supplied`,
+    fxCaption: S.fxCaption(dateLong(valuationDate)),
     cost: costRows.length ? {
       rows: costRows.map(r => ({ label: `${r.label}, ${r.ccy}`, amount: `${num(r.amount)} ${r.ccy}` })),
-      totalText: `${num(costTotalRef)} ${refCcy}`, year: valuationDate.getUTCFullYear()
+      totalText: `${num(costTotalRef)} ${refCcy}`
     } : null
   });
 
   // 04 Performance
-  const navChart = buildLineChart(navSeries, { width: 600, height: 230 });
+  const navChart = buildLineChart(periodNavSeries, { width: 600, height: 230, tickLabel: compact, monthLabel: F.monthAbbr });
   const pnlRows = [...positions].sort((a, b) => b.pnlRef - a.pnlRef).slice(0, monthly.length ? ROWS.pnlWithChart : ROWS.pnlAlone);
   const maxPnl = Math.max(...pnlRows.map(p => Math.abs(p.pnlRef)), 1);
+  const customPeriod = twr?.periods?.CUSTOM;
   pages.push({
-    type: 'performance', section: '04 · Performance', title: 'Performance', refCcy,
+    type: 'performance', section: sectionName('04'), title: S.performanceTitle, refCcy,
     kpis: [
-      { label: `Net asset value, ${refCcy}`, value: num(nav) },
-      ...(twr?.periods?.YTD?.hasData ? [{ label: ytdRow?.shortened ? `Time-weighted return, ${ytdRow.label.toLowerCase()}` : 'Time-weighted return, year to date', value: twr.periods.YTD.twrFormatted, tone: twr.periods.YTD.twr >= 0 ? 'pos' : 'neg' }] : [])
+      { label: S.kpiNav(refCcy), value: num(nav) },
+      ...(customPeriod?.hasData ? [{ label: S.kpiTwr, value: signedPct(customPeriod.twr), tone: customPeriod.twr >= 0 ? 'pos' : 'neg' }] : [])
     ],
-    navChart, navCaption: navSeries.length ? `${refCcy}, at each valuation date from ${dateShort(navSeries[0].date)}` : null,
+    navChart, navCaption: periodNavSeries.length ? S.navCaption(refCcy, dateShort(periodNavSeries[0].date)) : null,
     periodRows,
-    monthlyChart, monthlyCaption: monthly.length ? `TWR${monthly.some(m => m.isPartial) ? ' · * partial month' : ''}` : null,
+    monthlyChart, monthlyCaption: monthly.length ? `TWR${monthly.some(m => m.isPartial) ? S.partialMonth : ''}` : null,
     yearly,
     pnlRows: pnlRows.map(p => ({ name: p.name, pnl: signed(p.pnlRef), pnlPct: p.costRef ? signedPct(p.pnlRef / p.costRef) : '—', positive: p.pnlRef >= 0, barPct: (Math.abs(p.pnlRef) / maxPnl) * 100 })),
-    footnote: `Returns are time-weighted: deposits and withdrawals are neutralised, so they measure the investment result. ${hasFinancing && !account ? " They cover the investment accounts; credit facilities and cards are left out." : ""} Changes in ${refCcy} are the simple difference in net asset value, financing included, and include flows.${twr?.metadata?.externalFlowCount ? ` ${twr.metadata.externalFlowCount} external flows neutralised.` : ''}${periodRows.some(r => r.shortened) ? ` Returns are measured from ${dateLong(twr.periods.ALL.measuredFrom)}, the first date with both valuations and the custodian's record of deposits and withdrawals.` : ''}`
+    footnote: S.performanceFootnote({
+      ccy: refCcy,
+      financingLeftOut: hasFinancing && !account,
+      flows: twr?.metadata?.externalFlowCount || 0,
+      measuredFrom: periodRows.some(r => r.shortened) && twr?.periods?.ALL?.measuredFrom ? dateLong(twr.periods.ALL.measuredFrom) : null
+    })
   });
 
-  // 05 Activity (YTD), securities transactions continue on extra pages
+  // 05 Activity of the period, securities transactions continue on extra pages
   const tradeChunks = trades.length ? chunk(trades, ROWS.tradesFirst, ROWS.tradesNext) : [[]];
   const cardChart = cardTotal > 0 ? buildBarChart(cardMonths, { width: 320, height: 140, tickFormat: (v) => compact(v) }) : null;
   tradeChunks.forEach((rowsOnPage, i) => {
     pages.push({
-      type: 'activity', section: '05 · Activity', title: i === 0 ? `Activity ${valuationDate.getUTCFullYear()}` : `Activity ${valuationDate.getUTCFullYear()} (continued)`,
+      type: 'activity', section: sectionName('05'), title: i === 0 ? S.activityTitle : `${S.activityTitle}${S.continued}`,
       first: i === 0,
-      periodText: `1 Jan to ${dayMonth(valuationDate)} ${valuationDate.getUTCFullYear()}`,
-      totalCount: operations.length, counts: activityCounts,
-      trades: { caption: `${trades.length} booking${trades.length === 1 ? '' : 's'}`, rows: rowsOnPage },
+      periodCaption: S.activityPeriod(periodText, operations.length),
+      counts: activityCounts,
+      trades: { caption: S.bookings(trades.length), rows: rowsOnPage },
       income: i === 0 && incomeByCcy.length ? {
-        rows: incomeByCcy.map(r => ({ ccy: r.ccy, count: String(r.count), net: num(r.net), tax: r.tax ? num(r.tax) : '0.00' })),
+        rows: incomeByCcy.map(r => ({ ccy: r.ccy, count: String(r.count), net: num(r.net), tax: num(r.tax || 0) })),
         totalText: num(incomeTotalRef), totalCount: String(incomeCount), refCcy
       } : null,
-      card: i === 0 && cardChart ? { chart: cardChart, caption: `${cardOps.length} card payment${cardOps.length === 1 ? '' : 's'}, ${refCcy} ${num(cardTotal)} in ${valuationDate.getUTCFullYear()}` } : null
+      card: i === 0 && cardChart ? { chart: cardChart, caption: S.cardCaption(cardOps.length, refCcy, num(cardTotal)) } : null
     });
   });
 
-  // 05 Account movements of the last complete month — the valuation month when
-  // the valuation falls on its last days (cards and trades are on the activity page)
-  const lastDayOfMonth = new Date(Date.UTC(valuationDate.getUTCFullYear(), valuationDate.getUTCMonth() + 1, 0)).getUTCDate();
-  const movementsMonthOffset = valuationDate.getUTCDate() >= lastDayOfMonth - 3 ? 0 : -1;
-  const monthStart = new Date(Date.UTC(valuationDate.getUTCFullYear(), valuationDate.getUTCMonth() + movementsMonthOffset, 1));
-  const monthEnd = new Date(Date.UTC(valuationDate.getUTCFullYear(), valuationDate.getUTCMonth() + movementsMonthOffset + 1, 1));
+  // 05 Account movements of the period's last complete month — the end month
+  // when the period ends on its last days (cards and trades are on the activity page)
+  const lastDayOfMonth = new Date(Date.UTC(periodEndDate.getUTCFullYear(), periodEndDate.getUTCMonth() + 1, 0)).getUTCDate();
+  const movementsMonthOffset = periodEndDate.getUTCDate() >= lastDayOfMonth - 3 ? 0 : -1;
+  const monthStart = new Date(Date.UTC(periodEndDate.getUTCFullYear(), periodEndDate.getUTCMonth() + movementsMonthOffset, 1));
+  const monthEnd = new Date(Date.UTC(periodEndDate.getUTCFullYear(), periodEndDate.getUTCMonth() + movementsMonthOffset + 1, 1));
   const movements = operations
     .filter(o => new Date(o.operationDate) >= monthStart && new Date(o.operationDate) < monthEnd && o.operationType !== 'CARD_PAYMENT' && !TRADE_TYPES.has(o.operationType))
     .map(o => {
       const net = opAmount(o);
       const fees = opFees(o);
       return {
-        date: dayMonth(o.operationDate), type: TYPE_LABEL[o.operationType] || 'Other',
+        date: dayMonth(o.operationDate), type: typeLabel(o.operationType),
         description: opText(o),
-        account: `${o.portfolioCode}${isIsin(o.isin) ? ` · ${o.isin}` : o.isin ? ` · ref ${o.isin}` : ''}`,
+        account: `${o.portfolioCode}${isIsin(o.isin) ? ` · ${o.isin}` : o.isin ? ` · ${S.ref} ${o.isin}` : ''}`,
         amount: signed(fees && opGross(o) !== net ? opGross(o) : net),
         fees: fees ? num(-fees) : '—', ccy: opCurrency(o) || '', net: signed(net), positive: net >= 0
       };
     });
-  // No page for a month without entries (the activity page already covers the year)
+  // No page for a month without entries (the activity page already covers the period)
   const movementChunks = movements.length ? chunk(movements, ROWS.movements, ROWS.movements) : [];
   const cardsThisMonth = cardOps.filter(o => new Date(o.operationDate) >= monthStart && new Date(o.operationDate) < monthEnd).length;
   movementChunks.forEach((rowsOnPage, i) => {
     pages.push({
-      type: 'movements', section: '05 · Activity',
-      title: `Account movements, ${monthYear(monthStart)}${i > 0 ? ' (continued)' : ''}`,
+      type: 'movements', section: sectionName('05'),
+      title: `${S.movementsTitle(F.monthYear(monthStart))}${i > 0 ? S.continued : ''}`,
       rows: rowsOnPage,
-      footnote: i === movementChunks.length - 1
-        ? `${movements.length} entr${movements.length === 1 ? 'y' : 'ies'} shown.${cardsThisMonth ? ` The ${cardsThisMonth} card payment${cardsThisMonth === 1 ? '' : 's'} of the month are summarised on the activity page.` : ''} Full history for the year is available on request.`
-        : null
+      footnote: i === movementChunks.length - 1 ? S.movementsFootnote(movements.length, cardsThisMonth) : null
     });
   });
 
@@ -758,12 +829,11 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     || primaryEntity?.assignedUserIds?.[0] || primaryEntity?.relationshipManagerId || null;
   const rm = rmId ? await UsersCollection.findOneAsync(rmId, { fields: { profile: 1, username: 1, email: 1 } }) : null;
   pages.push({
-    type: 'notes', section: '06 · Notes', title: 'Notes and disclosures',
-    generatedText: `Report generated ${timestamp(now)}`,
-    sourceText: `Source data: ${custodianText}, positions and movements to ${dateLong(valuationDate)}`,
-    custodianText,
-    valuationText: dateLong(valuationDate),
-    refCcy,
+    type: 'notes', section: sectionName('06'), title: S.notesTitle,
+    generatedText: S.generated(F.timestamp(now)),
+    definitions: S.ui.definitions(refCcy),
+    notice: S.ui.notice(custodians.length ? custodianText : null),
+    valuationBasis: S.ui.valuationBasisText(dateLong(valuationDate), refCcy),
     rm: rm ? {
       name: userName(rm),
       email: rm.email || (rm.username?.includes('@') ? rm.username : null),
@@ -784,7 +854,7 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   pages.forEach((p) => {
     p.section = `${sectionNumber.get(p.section.slice(0, 2))}${p.section.slice(2)}`;
     if (p.type === 'overview') {
-      p.performanceRef = sectionNumber.has('04') ? `Detail in section ${sectionNumber.get('04')}.` : null;
+      p.performanceRef = sectionNumber.has('04') ? S.detailIn(sectionNumber.get('04')) : null;
     }
   });
 
@@ -793,21 +863,37 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   pages.forEach((p, i) => { p.pageNumber = i + 2; p.pageCount = total; });
   const firstPageOf = (section) => pages.find(p => p.section.startsWith(section))?.pageNumber;
   const contents = kept
-    .map(s => ({ n: sectionNumber.get(s.n), label: s.label, page: firstPageOf(sectionNumber.get(s.n)) }))
+    .map(s => ({ n: sectionNumber.get(s.n), label: S.sections[s.key], page: firstPageOf(sectionNumber.get(s.n)) }))
     .filter(c => c.page);
 
+  // Fixed labels of the page, resolved to strings (functions do not travel over DDP)
+  const ui = Object.fromEntries(Object.entries(S.ui)
+    .filter(([, v]) => typeof v === 'string'));
+  Object.assign(ui, {
+    navWithCcy: S.ui.navWithCcy(refCcy),
+    valueRef: S.ui.valueRef(refCcy),
+    valueComma: S.ui.valueComma(refCcy),
+    againstCost: S.ui.againstCost(refCcy),
+    kicker: S.kicker, confidential: S.confidential, accounts: S.accounts, contents: S.contents,
+    reportDate: S.reportDate, referenceCurrency: S.referenceCurrency, custodian: S.custodian, period: S.period,
+    coverNav: S.netAssetValue, address: S.address, regulated: S.regulated
+  });
+
   return {
-    meta: { pageCount: total, empty: isEmpty, missingRates: [...fx.missing] },
+    meta: { pageCount: total, empty: isEmpty, missingRates: [...fx.missing], lang: S.lang, anonymous: !!anonymous },
     header,
+    labels: { footer: { left: S.footerLeft, middle: S.regulated } },
+    ui,
     cover: {
       clientName,
       longName: clientName.length > 22,
-      emptyText: isEmpty ? 'No positions or account movements in this perimeter.' : null,
-      valuationText: `Valuation as of ${dateLong(valuationDate)}`,
+      emptyText: isEmpty ? S.emptyText : null,
+      valuationText: S.valuationAsOf(dateLong(valuationDate)),
       accounts: accountCodes,
       contents,
       reportDate: dateLong(now),
-      currencyText: currencyName(refCcy),
+      periodText,
+      currencyText: F.currencyName(refCcy),
       custodianText,
       navText: `${refCcy} ${num(nav)}`
     },

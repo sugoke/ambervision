@@ -22,7 +22,7 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
  * Line chart of a value series.
  * @param {Array<{date: string, value: number}>} series - sorted by date ('YYYY-MM-DD')
  */
-export const buildLineChart = (series, { width = 600, height = 230, padLeft = 56, padRight = 12, padTop = 10, padBottom = 24 } = {}) => {
+export const buildLineChart = (series, { width = 600, height = 230, padLeft = 56, padRight = 12, padTop = 10, padBottom = 24, tickLabel = compact, monthLabel = (m) => MONTH_ABBR[m] } = {}) => {
   const points = (series || []).filter(p => Number.isFinite(p.value));
   if (points.length < 2) return null;
   const values = points.map(p => p.value);
@@ -43,7 +43,7 @@ export const buildLineChart = (series, { width = 600, height = 230, padLeft = 56
   const area = `${line} L${round(x(points[points.length - 1].date))} ${round(padTop + plotH)} L${round(x(points[0].date))} ${round(padTop + plotH)} Z`;
 
   const yTicks = [];
-  for (let v = lo; v <= hi + step / 2; v += step) yTicks.push({ y: round(y(v)), label: compact(v) });
+  for (let v = lo; v <= hi + step / 2; v += step) yTicks.push({ y: round(y(v)), label: tickLabel(v) });
 
   // One tick per month start inside the range (thinned to at most 12)
   const xTicks = [];
@@ -58,7 +58,7 @@ export const buildLineChart = (series, { width = 600, height = 230, padLeft = 56
   months.forEach((m, i) => {
     if (i % every !== 0) return;
     const iso = m.toISOString().slice(0, 10);
-    xTicks.push({ x: round(x(iso)), label: m.getUTCMonth() === 0 ? String(m.getUTCFullYear()) : MONTH_ABBR[m.getUTCMonth()] });
+    xTicks.push({ x: round(x(iso)), label: m.getUTCMonth() === 0 ? String(m.getUTCFullYear()) : monthLabel(m.getUTCMonth()) });
   });
 
   const last = points[points.length - 1];

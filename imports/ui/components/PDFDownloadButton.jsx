@@ -25,7 +25,10 @@ const PDFDownloadButton = ({
   showLanguageSelector = true, // Whether to show language selection modal
   onDownloaded = null, // Optional callback fired after a successful PDF download
   progressLabel = null, // Text of the progress overlay; defaults per reportType
-  sectionChoices = null // Optional [{ key, label, required }]: ticked sections go to the server as options.sections
+  sectionChoices = null, // Optional [{ key, label, required }]: ticked sections go to the server as options.sections
+  nameChoice = false, // Offer "anonymous" (default) or "show the account name": options.anonymous
+  anonymousFilename = null, // File name used when the report is anonymous
+  periodChoice = false // Offer a report period (from / to): options.periodFrom, options.periodTo
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
@@ -35,6 +38,14 @@ const PDFDownloadButton = ({
   const hasSections = Array.isArray(sectionChoices) && sectionChoices.length > 0;
   const noSectionTicked = hasSections && !sectionChoices.some(s => !s.required && selectedSections.includes(s.key));
   const toggleSection = (key) => setSelectedSections(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
+  const [anonymous, setAnonymous] = useState(true);
+  // Report period: 1 January to today by default (local calendar days)
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const [periodFrom, setPeriodFrom] = useState(() => `${new Date().getFullYear()}-01-01`);
+  const [periodTo, setPeriodTo] = useState(() => isoDay(new Date()));
+  const badPeriod = periodChoice && (!periodFrom || !periodTo || periodFrom > periodTo || periodTo > isoDay(new Date()));
+  const blocked = noSectionTicked || badPeriod;
+  const fileName = nameChoice && anonymous && anonymousFilename ? anonymousFilename : filename;
 
   // Seconds since generation started, shown in the progress overlay
   useEffect(() => {
@@ -46,7 +57,7 @@ const PDFDownloadButton = ({
   }, [isGenerating]);
 
   const handleDownloadClick = () => {
-    if (showLanguageSelector || hasSections) {
+    if (showLanguageSelector || hasSections || nameChoice || periodChoice) {
       setShowLangModal(true);
     } else {
       handleDownloadPDF('en');
@@ -73,9 +84,11 @@ const PDFDownloadButton = ({
         sessionId,
         lang,
         options: {
-          title: filename || 'Report',
+          title: fileName || 'Report',
           ...options,
-          ...(hasSections ? { sections: sectionChoices.filter(s => s.required || selectedSections.includes(s.key)).map(s => s.key) } : {})
+          ...(hasSections ? { sections: sectionChoices.filter(s => s.required || selectedSections.includes(s.key)).map(s => s.key) } : {}),
+          ...(nameChoice ? { anonymous } : {}),
+          ...(periodChoice ? { periodFrom, periodTo } : {})
         }
       });
 
@@ -94,7 +107,7 @@ const PDFDownloadButton = ({
 
       const a = document.createElement('a');
       a.href = result.downloadUrl;
-      a.download = `${filename || 'report'}.pdf`;
+      a.download = `${fileName || 'report'}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -117,6 +130,25 @@ const PDFDownloadButton = ({
       setIsGenerating(false);
     }
   };
+
+  const modalHeading = {
+    margin: '0 0 0.75rem 0',
+    fontSize: '1.1rem',
+    fontWeight: '600',
+    color: 'var(--text-primary, white)',
+    textAlign: 'center'
+  };
+  const choiceRow = (enabled) => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.6rem',
+    padding: '0.4rem 0.6rem',
+    borderRadius: '6px',
+    border: '1px solid var(--border-color, #4b5563)',
+    cursor: enabled ? 'pointer' : 'default',
+    fontSize: '0.9rem',
+    color: 'var(--text-primary, white)'
+  });
 
   // Language Selection Modal - rendered via Portal to escape stacking contexts
   const languageModal = showLangModal && createPortal(
@@ -141,13 +173,56 @@ const PDFDownloadButton = ({
           background: 'var(--bg-primary, #1f2937)',
           borderRadius: '12px',
           padding: '1.5rem',
-          maxWidth: hasSections ? '380px' : '320px',
+          maxWidth: hasSections || nameChoice || periodChoice ? '400px' : '320px',
+          maxHeight: '90vh',
+          overflowY: 'auto',
           width: '90%',
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
           pointerEvents: 'auto'
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {nameChoice && (
+          <div style={{ marginBottom: '1.25rem' }}>
+            <h3 style={modalHeading}>Client name</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+              {[
+                { value: true, label: 'Anonymous', hint: 'account numbers only' },
+                { value: false, label: 'Show the account name', hint: 'client or policy name on every page' }
+              ].map(o => (
+                <label key={String(o.value)} style={choiceRow(true)}>
+                  <input type="radio" name="pdf-anonymous" checked={anonymous === o.value} onChange={() => setAnonymous(o.value)} />
+                  <span>{o.label}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted, #9ca3af)' }}>{o.hint}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {periodChoice && (
+          <div style={{ marginBottom: '1.25rem' }}>
+            <h3 style={modalHeading}>Report period</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+              {[['From', periodFrom, setPeriodFrom], ['To', periodTo, setPeriodTo]].map(([label, value, set]) => (
+                <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.8rem', color: 'var(--text-secondary, #9ca3af)' }}>
+                  {label}
+                  <input
+                    type="date"
+                    value={value}
+                    max={isoDay(new Date())}
+                    onChange={(e) => set(e.target.value)}
+                    style={{ padding: '0.4rem 0.5rem', borderRadius: '6px', border: '1px solid var(--border-color, #4b5563)', background: 'var(--bg-secondary, #111827)', color: 'var(--text-primary, white)', fontSize: '0.9rem' }}
+                  />
+                </label>
+              ))}
+            </div>
+            <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: badPeriod ? 'var(--warning-color, #f59e0b)' : 'var(--text-muted, #9ca3af)' }}>
+              {badPeriod
+                ? 'The start must be on or before the end, and the end no later than today.'
+                : 'Positions are valued at the end date; transactions and performance cover the period.'}
+            </div>
+          </div>
+        )}
         {hasSections && (
           <div style={{ marginBottom: '1.25rem' }}>
             <h3 style={{
@@ -210,7 +285,7 @@ const PDFDownloadButton = ({
         }}>
           <button
             onClick={() => handleDownloadPDF('en')}
-            disabled={noSectionTicked}
+            disabled={blocked}
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
@@ -218,8 +293,8 @@ const PDFDownloadButton = ({
               color: 'white',
               border: 'none',
               borderRadius: '8px',
-              cursor: noSectionTicked ? 'not-allowed' : 'pointer',
-              opacity: noSectionTicked ? 0.5 : 1,
+              cursor: blocked ? 'not-allowed' : 'pointer',
+              opacity: blocked ? 0.5 : 1,
               fontSize: '0.95rem',
               fontWeight: '500',
               display: 'flex',
@@ -234,7 +309,7 @@ const PDFDownloadButton = ({
           </button>
           <button
             onClick={() => handleDownloadPDF('fr')}
-            disabled={noSectionTicked}
+            disabled={blocked}
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
@@ -242,8 +317,8 @@ const PDFDownloadButton = ({
               color: 'white',
               border: 'none',
               borderRadius: '8px',
-              cursor: noSectionTicked ? 'not-allowed' : 'pointer',
-              opacity: noSectionTicked ? 0.5 : 1,
+              cursor: blocked ? 'not-allowed' : 'pointer',
+              opacity: blocked ? 0.5 : 1,
               fontSize: '0.95rem',
               fontWeight: '500',
               display: 'flex',
