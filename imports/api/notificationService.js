@@ -48,7 +48,7 @@ export async function resolveClientRmIds({ clientIds = [], bankAccountIds = [] }
   if (candidates.size === 0) return [];
 
   const rms = await UsersCollection.find(
-    { _id: { $in: [...candidates] }, role: USER_ROLES.RELATIONSHIP_MANAGER },
+    { _id: { $in: [...candidates] }, role: USER_ROLES.RELATIONSHIP_MANAGER, deactivatedAt: { $exists: false } },
     { fields: { _id: 1 } }
   ).fetchAsync();
   return rms.map(u => u._id);

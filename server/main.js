@@ -1293,6 +1293,12 @@ Meteor.methods({
       throw new Meteor.Error('invalid-credentials', 'Invalid email or password');
     }
 
+    // A deactivated user (left the firm) cannot sign in; same generic error.
+    if (user.deactivatedAt) {
+      await AuditLog.record({ actorUserId: user._id, action: 'auth.loginFailed', meta: { deactivated: true } });
+      throw new Meteor.Error('invalid-credentials', 'Invalid email or password');
+    }
+
     // Successful auth — clear any failure counter / lock.
     if (user.failedLoginCount || user.lockedUntil) {
       await UsersCollection.updateAsync(user._id, {
@@ -1472,7 +1478,8 @@ Meteor.methods({
       // Find user by email
       const user = await UsersCollection.findOneAsync({ email: normalizedEmail });
 
-      if (user) {
+      // No reset link for a deactivated user
+      if (user && !user.deactivatedAt) {
         // Generate reset token
         const { token, expiresAt } = await PasswordResetHelpers.createResetToken(user._id, normalizedEmail);
 
@@ -1560,6 +1567,9 @@ Meteor.methods({
       const user = await UsersCollection.findOneAsync(tokenData.userId);
       if (!user) {
         throw new Meteor.Error('user-not-found', 'User not found');
+      }
+      if (user.deactivatedAt) {
+        throw new Meteor.Error('invalid-token', 'Invalid or expired reset token');
       }
 
       // Update password

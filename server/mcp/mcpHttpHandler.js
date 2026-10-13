@@ -141,6 +141,8 @@ WebApp.connectHandlers.use('/mcp', async (req, res) => {
       // their own use) — no scope model applies.
       validation = await McpTokenHelpers.validate(rawToken);
     }
+    // A deactivated user's tokens stop working
+    if (validation?.user?.deactivatedAt) validation = null;
   } catch (err) {
     console.error('[MCP] Token validation error:', err?.message || err);
   }

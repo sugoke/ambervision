@@ -234,7 +234,7 @@ export async function scanSizeableTransactions({ force = false } = {}) {
       if (ids.length === 0 && entity) ids = [entity.relationshipManagerId, ...(entity.assignedUserIds || [])].filter(Boolean);
       ids = [...new Set(ids)];
       const staff = ids.length ? await UsersCollection.find(
-        { _id: { $in: ids }, role: { $ne: USER_ROLES.CLIENT } },
+        { _id: { $in: ids }, role: { $ne: USER_ROLES.CLIENT }, deactivatedAt: { $exists: false } },
         { fields: { _id: 1 } }
       ).fetchAsync() : [];
       const staffIds = new Set(staff.map(u => u._id));
