@@ -30,10 +30,10 @@ const ProductAllocation = ({ product, user, onClose }) => {
   const [isSyncingHoldings, setIsSyncingHoldings] = useState(false);
 
   // Subscribe to users, bank accounts, banks, and existing allocations
-  const usersLoading = useSubscribe('customUsers');
-  const bankAccountsLoading = useSubscribe('allBankAccounts');
-  const banksLoading = useSubscribe('banks');
-  const allocationsLoading = useSubscribe('productAllocations', product._id);
+  const usersLoading = useSubscribe('customUsers', localStorage.getItem('sessionId'));
+  const bankAccountsLoading = useSubscribe('allBankAccounts', localStorage.getItem('sessionId'));
+  const banksLoading = useSubscribe('banks', localStorage.getItem('sessionId'));
+  const allocationsLoading = useSubscribe('productAllocations', product._id, localStorage.getItem('sessionId'));
 
   // Check if subscriptions are actually loading or just not ready
   const isActuallyLoading = usersLoading === null || bankAccountsLoading === null ||

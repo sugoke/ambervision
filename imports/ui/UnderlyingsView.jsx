@@ -4,6 +4,7 @@ import { useTracker, useSubscribe } from 'meteor/react-meteor-data';
 import { UnderlyingsAnalysisCollection } from '/imports/api/underlyingsAnalysis';
 import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
 import { AllocationsCollection } from '/imports/api/allocations';
+import { USER_ROLES } from '/imports/api/users';
 import { useTheme } from './ThemeContext.jsx';
 import { useViewAs } from './ViewAsContext.jsx';
 import { Bubble } from 'react-chartjs-2';
@@ -26,6 +27,8 @@ const asOfStringToDate = (s) => (s ? new Date(`${s}T23:59:59.999`) : null);
 const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const { isDarkMode } = useTheme();
   const { viewAsFilter } = useViewAs();
+  // Rebuilding the analysis and the AI risk report are staff actions
+  const canRunAnalysis = user?.role !== USER_ROLES.CLIENT;
   const [sortColumn, setSortColumn] = useState('symbol');
   const [sortDirection, setSortDirection] = useState('asc');
   const [searchTerm, setSearchTerm] = useState('');
@@ -47,14 +50,15 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const [reportLanguage, setReportLanguage] = useState('en'); // 'en' or 'fr'
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
 
-  // Subscribe to the pre-computed analysis
-  const isLoading = useSubscribe('phoenixUnderlyingsAnalysis');
+  const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
+
+  // Subscribe to the pre-computed analysis (the publication needs the session to authorize)
+  const isLoading = useSubscribe('phoenixUnderlyingsAnalysis', sessionId);
 
   // Subscribe to allocations for ViewAs filtering and compute accessible product IDs.
   // Subscribe + read live inside the same autorun so that if ViewAsContext or anything
   // else stops the sub externally, the reactive find().fetch() re-fires the autorun
   // and re-creates the subscription with the current viewAsFilter.
-  const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
   const { accessibleProductIds, allocationsReady } = useTracker(() => {
     const handle = Meteor.subscribe('allAllocations', sessionId, viewAsFilter);
     const ready = handle.ready();
@@ -616,6 +620,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
               </button>
             )}
           </div>
+          {canRunAnalysis && (<>
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}
@@ -662,6 +667,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           >
             <span>⚠️</span> Generate Risk Report
           </button>
+          </>)}
         </div>
       </div>
 

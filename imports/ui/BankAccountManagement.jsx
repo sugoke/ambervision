@@ -51,8 +51,8 @@ const BankAccountManagement = ({ user }) => {
   const [editFormData, setEditFormData] = useState({});
 
   // Subscribe to user's bank accounts and banks
-  const bankAccountsLoading = useSubscribe('userBankAccounts', user._id);
-  const banksLoading = useSubscribe('banks');
+  const bankAccountsLoading = useSubscribe('userBankAccounts', localStorage.getItem('sessionId'));
+  const banksLoading = useSubscribe('banks', localStorage.getItem('sessionId'));
 
   const bankAccounts = useFind(() => 
     BankAccountsCollection.find({ userId: user._id, isActive: true }, { sort: { createdAt: -1 } })

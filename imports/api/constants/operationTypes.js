@@ -302,7 +302,7 @@ export const JULIUS_BAER_OPERATION_TYPE_MAPPING = {
   'corporate action': OPERATION_TYPES.CORPORATE_ACTION,
   'split': OPERATION_TYPES.CORPORATE_ACTION,
   'merger': OPERATION_TYPES.CORPORATE_ACTION,
-  'option premium': OPERATION_TYPES.OTHER
+  'option premium': OPERATION_TYPES.OPTION_PREMIUM
 };
 
 // =============================================================================

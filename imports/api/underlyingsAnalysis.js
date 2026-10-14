@@ -61,14 +61,70 @@ function isAllocationOpenAsOf(allocation, asOfDate) {
   return true;
 }
 
+/** Nominal invested per productId, summed over the given allocations. */
+export function nominalByProductFrom(allocations) {
+  const nominalByProduct = {};
+  allocations.forEach(allocation => {
+    if (!nominalByProduct[allocation.productId]) {
+      nominalByProduct[allocation.productId] = 0;
+    }
+    nominalByProduct[allocation.productId] += allocation.nominalInvested || 0;
+  });
+  return nominalByProduct;
+}
+
+/**
+ * Set productNotional and bubbleSize on each row from the given nominals.
+ * Bubble sizes are scaled over the products present in the rows, so a scoped
+ * set of rows is sized against its own notionals, never the firm's.
+ */
+export function applyNotionalSizing(rows, nominalByProduct) {
+  const productIds = [...new Set(rows.map(r => r.productId))];
+  const notionalAmounts = productIds
+    .map(id => nominalByProduct[id] || 0)
+    .filter(n => n > 0);
+
+  const minNotional = notionalAmounts.length > 0 ? Math.min(...notionalAmounts) : 0;
+  const maxNotional = notionalAmounts.length > 0 ? Math.max(...notionalAmounts) : 0;
+
+  return rows.map(row => {
+    const productNotional = nominalByProduct[row.productId] || 0;
+    let bubbleSize = 8;
+    if (maxNotional > minNotional && productNotional > 0) {
+      const normalizedValue = (productNotional - minNotional) / (maxNotional - minNotional);
+      bubbleSize = 5 + (normalizedValue * 15);
+    }
+    return { ...row, bubbleSize, productNotional };
+  });
+}
+
+/** Summary counts for a set of analysis rows. */
+export function summarizeUnderlyings(rows) {
+  return {
+    totalRows: rows.length,
+    totalProducts: new Set(rows.map(u => u.productId)).size,
+    uniqueUnderlyings: new Set(rows.map(u => u.symbol)).size,
+    positivePerformance: rows.filter(u => u.performance > 0).length,
+    negativePerformance: rows.filter(u => u.performance < 0).length,
+    withProtection: rows.filter(u => u.hasProtection).length,
+    belowBarrier: rows.filter(u => u.distanceToBarrier != null && u.distanceToBarrier < 0).length,
+    warningZone: rows.filter(u => u.distanceToBarrier != null && u.distanceToBarrier >= 0 && u.distanceToBarrier < 10).length,
+    safeZone: rows.filter(u => u.distanceToBarrier != null && u.distanceToBarrier >= 10).length
+  };
+}
+
 /**
  * Build the complete underlyings analysis document.
  * @param {Date|null} asOfDate - null/undefined means live (today). A Date triggers
  *   historical mode: products filtered by date, allocations filtered by date,
  *   prices read from MarketDataCacheCollection.history at or before asOfDate.
+ * @param {Object} [options]
+ * @param {Object|null} [options.allocationsFilter] - extra allocations selector
+ *   (a viewer's scope). When set, only products with an allocation matching it
+ *   are analysed, and notionals count those allocations only.
  * @returns {Promise<Object>} analysis doc (without _id)
  */
-export async function buildUnderlyingsAnalysis(asOfDate = null) {
+export async function buildUnderlyingsAnalysis(asOfDate = null, { allocationsFilter = null } = {}) {
   const isHistorical = asOfDate instanceof Date;
   const effectiveDate = isHistorical ? asOfDate : new Date();
   const mode = isHistorical ? `as-of ${asOfDate.toISOString().slice(0, 10)}` : 'live';
@@ -123,7 +179,12 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
 
   // Exclude allocations of archived (closed-relationship) clients from exposure analysis
   const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
-  const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
+  const excludeArchived = (sel) => {
+    const clauses = [sel];
+    if (archivedAllocExclusion.$nor) clauses.push(archivedAllocExclusion);
+    if (allocationsFilter) clauses.push(allocationsFilter);
+    return clauses.length === 1 ? sel : { $and: clauses };
+  };
 
   let allocations;
   if (isHistorical) {
@@ -133,24 +194,15 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
     allocations = await AllocationsCollection.find(excludeArchived({ status: 'active' })).fetchAsync();
   }
 
-  const nominalByProduct = {};
-  allocations.forEach(allocation => {
-    if (!nominalByProduct[allocation.productId]) {
-      nominalByProduct[allocation.productId] = 0;
-    }
-    nominalByProduct[allocation.productId] += allocation.nominalInvested || 0;
-  });
+  const nominalByProduct = nominalByProductFrom(allocations);
 
   console.log(`[UnderlyingsAnalysis] Loaded ${allocations.length} allocations (${mode})`);
 
-  const notionalAmounts = products
-    .map(p => nominalByProduct[p._id] || 0)
-    .filter(n => n > 0);
-
-  const minNotional = notionalAmounts.length > 0 ? Math.min(...notionalAmounts) : 0;
-  const maxNotional = notionalAmounts.length > 0 ? Math.max(...notionalAmounts) : 0;
-
-  console.log(`[UnderlyingsAnalysis] Investment range: ${minNotional.toLocaleString()} - ${maxNotional.toLocaleString()}`);
+  // A scoped build analyses only the products the scope is allocated to
+  if (allocationsFilter) {
+    const allocatedIds = new Set(allocations.map(a => a.productId));
+    products = products.filter(p => allocatedIds.has(p._id));
+  }
 
   const underlyingsArray = [];
 
@@ -205,13 +257,6 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
       if (protectionBarrier) {
         protectionBarrierLevel = protectionBarrier.barrier_level || protectionBarrier.level;
       }
-    }
-
-    const productNotional = nominalByProduct[product._id] || 0;
-    let bubbleSize = 8;
-    if (maxNotional > minNotional && productNotional > 0) {
-      const normalizedValue = (productNotional - minNotional) / (maxNotional - minNotional);
-      bubbleSize = 5 + (normalizedValue * 15);
     }
 
     for (const underlying of productUnderlyings) {
@@ -332,9 +377,7 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
           ? (distanceToBarrier < 0 ? 'rgba(239, 68, 68, 1)' :
              distanceToBarrier < 10 ? 'rgba(249, 115, 22, 1)' :
              'rgba(16, 185, 129, 1)')
-          : null,
-        bubbleSize: bubbleSize,
-        productNotional: productNotional
+          : null
       });
     }
   }
@@ -343,19 +386,11 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
 
   const processingTime = Date.now() - startTime;
 
+  const rows = applyNotionalSizing(underlyingsArray, nominalByProduct);
+
   return {
-    underlyings: underlyingsArray,
-    summary: {
-      totalRows: underlyingsArray.length,
-      totalProducts: products.length,
-      uniqueUnderlyings: new Set(underlyingsArray.map(u => u.symbol)).size,
-      positivePerformance: underlyingsArray.filter(u => u.performance > 0).length,
-      negativePerformance: underlyingsArray.filter(u => u.performance < 0).length,
-      withProtection: underlyingsArray.filter(u => u.hasProtection).length,
-      belowBarrier: underlyingsArray.filter(u => u.distanceToBarrier != null && u.distanceToBarrier < 0).length,
-      warningZone: underlyingsArray.filter(u => u.distanceToBarrier != null && u.distanceToBarrier >= 0 && u.distanceToBarrier < 10).length,
-      safeZone: underlyingsArray.filter(u => u.distanceToBarrier != null && u.distanceToBarrier >= 10).length
-    },
+    underlyings: rows,
+    summary: { ...summarizeUnderlyings(rows), totalProducts: products.length },
     asOfDate: isHistorical ? asOfDate : null,
     asOfDateFormatted: isHistorical ? asOfDate.toISOString().slice(0, 10) : null,
     isHistorical,
@@ -368,24 +403,23 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
 
 if (Meteor.isServer) {
   /**
-   * The analysis is firm-wide notional per product and ISIN — the same
-   * aggregate the phoenixUnderlyingsAnalysis publication restricts to see-all
-   * roles, so generating or reading it on demand follows the same rule.
+   * The stored live analysis is firm-wide notional per product and ISIN. Any
+   * staff member may rebuild it (the result is only ever read through the
+   * viewer's scope); reads go through server/helpers/underlyingsScope.js, which
+   * hands see-all roles the firm-wide view and everyone else their perimeter.
    */
-  const requireSeeAll = async (sessionId) => {
-    const { requireRole } = await import('../../server/helpers/sessionAuth.js');
-    const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
-    return requireRole(sessionId, SEE_ALL_ROLES);
-  };
+  const sessionAuth = () => import('../../server/helpers/sessionAuth.js');
 
   Meteor.methods({
     /**
      * Generate and store underlyings analysis for live Phoenix products.
-     * Every see-all viewer reads the same cached result.
+     * Every viewer reads the same cached result, filtered to their scope.
      */
     async 'underlyingsAnalysis.generate'(sessionId = null) {
       check(sessionId, Match.Maybe(String));
-      await requireSeeAll(sessionId);
+      const { requireRole } = await sessionAuth();
+      const { STAFF_ROLES, isSeeAll } = await import('../../server/helpers/accessPolicy.js');
+      const user = await requireRole(sessionId, STAFF_ROLES);
 
       const doc = await buildUnderlyingsAnalysis(null);
 
@@ -396,28 +430,33 @@ if (Meteor.isServer) {
 
       console.log('[UnderlyingsAnalysis] Stored live analysis in database');
 
+      // Firm-wide counts only for see-all roles
       return {
         success: true,
-        underlyingsCount: doc.summary.totalRows,
-        productsCount: doc.summary.totalProducts,
+        ...(isSeeAll(user) ? {
+          underlyingsCount: doc.summary.totalRows,
+          productsCount: doc.summary.totalProducts
+        } : {}),
         processingTimeMs: doc.processingTimeMs,
         generatedAt: doc.generatedAt
       };
     },
 
     /**
-     * Build the analysis as of a specific past date and return it directly.
-     * Does NOT persist — historical results are computed on demand.
+     * Build the analysis as of a specific past date, within the caller's scope,
+     * and return it directly. Does NOT persist — computed on demand.
      */
     async 'underlyingsAnalysis.generateAsOf'(asOfDate, sessionId = null) {
       check(asOfDate, Date);
       check(sessionId, Match.Maybe(String));
-      await requireSeeAll(sessionId);
+      const { requireSession } = await sessionAuth();
+      const user = await requireSession(sessionId);
 
       if (asOfDate.getTime() > Date.now()) {
         throw new Meteor.Error('invalid-date', 'asOfDate cannot be in the future');
       }
-      return await buildUnderlyingsAnalysis(asOfDate);
+      const { underlyingsAnalysisForUser } = await import('../../server/helpers/underlyingsScope.js');
+      return await underlyingsAnalysisForUser(user, asOfDate);
     }
   });
 }

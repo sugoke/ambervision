@@ -282,11 +282,48 @@ describe('access: publications', function () {
     assertOnlyOwners(F, multi.docs, ['A'], 'forUsers filtered to perimeter');
   });
 
+  it('underlyings analysis keeps held products only, with the scope notionals', async function () {
+    const { scopeLiveAnalysis } = await import('/server/helpers/underlyingsScope.js');
+    const { resolveScope } = await import('/server/helpers/accessScope.js');
+    const { UsersCollection } = await import('/imports/api/users');
+    const FIRM_NOTIONAL = 987654321;
+    const analysis = {
+      _id: 'phoenix_live_underlyings',
+      underlyings: ['prodA', 'prodB', 'prodJoint', 'prodUnheld'].map(key => ({
+        productId: F.products[key], symbol: key, performance: 1, productNotional: FIRM_NOTIONAL, bubbleSize: 20
+      }))
+    };
+    const rowsFor = async (name) => {
+      const user = await UsersCollection.findOneAsync(F.users[name]);
+      const scoped = await scopeLiveAnalysis(analysis, await resolveScope(user));
+      return scoped.underlyings;
+    };
+
+    const clientA = await rowsFor('clientA');
+    assert.deepStrictEqual(clientA.map(r => r.productId).sort(), [F.products.prodA, F.products.prodJoint].sort());
+    assert.ok(clientA.every(r => r.productNotional !== FIRM_NOTIONAL), 'firm notional must not reach a scoped viewer');
+
+    const rmA = await rowsFor('rmA');
+    assert.deepStrictEqual(rmA.map(r => r.productId).sort(), [F.products.prodA, F.products.prodB, F.products.prodJoint].sort());
+    assert.ok(!rmA.some(r => r.productId === F.products.prodUnheld));
+
+    const admin = await rowsFor('admin');
+    assert.strictEqual(admin.length, 4, 'see-all keeps the firm-wide analysis');
+  });
+
   it('firm-wide reference and analysis feeds are gated', async function () {
     const risk = await collectPublication('riskAnalysisReports', tok('rmA'));
     assert.strictEqual(risk.docs.length, 0, 'RM must not get firm-wide risk dossiers');
+    // Underlyings analysis reaches scoped viewers trimmed to their held products
     const und = await collectPublication('phoenixUnderlyingsAnalysis', tok('clientA'));
-    assert.strictEqual(und.docs.length, 0);
+    const clientAProducts = [F.products.prodA, F.products.prodJoint];
+    for (const doc of und.docs) {
+      for (const row of doc.underlyings || []) {
+        assert.ok(clientAProducts.includes(row.productId), `clientA receives underlyings row of ${row.productId}`);
+      }
+    }
+    const undAnon = await collectPublication('phoenixUnderlyingsAnalysis', null);
+    assert.strictEqual(undAnon.docs.length, 0, 'underlyings analysis requires a session');
     const banksAnon = await collectPublication('banks', null);
     assert.strictEqual(banksAnon.docs.length, 0, 'banks require a session');
     const banks = await collectPublication('banks', tok('clientA'));

@@ -14,7 +14,7 @@ const PriceUploadManager = ({ user }) => {
   const [success, setSuccess] = useState('');
 
   // Subscribe to recent price uploads for history
-  const pricesLoading = useSubscribe('recentPriceUploads', 10);
+  const pricesLoading = useSubscribe('recentPriceUploads', localStorage.getItem('sessionId'), 10);
   const recentUploads = useFind(() => 
     ProductPricesCollection.find({}, { 
       sort: { uploadDate: -1 }, 

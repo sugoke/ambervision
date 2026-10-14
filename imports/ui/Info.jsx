@@ -3,7 +3,7 @@ import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { LinksCollection } from '../api/links';
 
 export const Info = () => {
-  const isLoading = useSubscribe('links');
+  const isLoading = useSubscribe('links', localStorage.getItem('sessionId'));
   const links = useFind(() => LinksCollection.find());
 
   if(isLoading()) {

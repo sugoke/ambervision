@@ -187,7 +187,7 @@ const MarketTicker = () => {
   };
 
   // Subscribe to ticker prices from database (updated by cron job)
-  const tickerPricesLoading = useSubscribe('tickerPrices');
+  const tickerPricesLoading = useSubscribe('tickerPrices', localStorage.getItem('sessionId'));
 
   // Get all ticker prices from database
   const tickerPricesFromDB = useFind(() =>

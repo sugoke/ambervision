@@ -2,7 +2,7 @@ import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
-import { UnderlyingsAnalysisCollection, buildUnderlyingsAnalysis, isProductLiveAsOf } from './underlyingsAnalysis';
+import { isProductLiveAsOf } from './underlyingsAnalysis';
 import { EODApiHelpers } from './eodApi';
 import { ReportsCollection } from './reports';
 import { TemplateReportsCollection } from './templateReports';
@@ -287,13 +287,15 @@ Write the analysis now:`;
    * Uses isLatest holdings even in as-of mode: cost price is an acquisition cost and
    * essentially static, so the latest snapshot is a valid baseline for any date.
    * @param {Array<string>} productIds
+   * @param {Object|null} holdingsFilter - extra holdings selector (a viewer's scope)
    * @returns {Promise<Map>} - Map of productId -> baseline in percent-of-par (e.g. 95.71)
    */
-  async function getCostBaselines(productIds) {
+  async function getCostBaselines(productIds, holdingsFilter = null) {
     if (productIds.length === 0) return new Map();
 
+    const base = { linkedProductId: { $in: productIds }, isLatest: true, isActive: true };
     const holdings = await PMSHoldingsCollection.find(
-      { linkedProductId: { $in: productIds }, isLatest: true, isActive: true },
+      holdingsFilter ? { $and: [base, holdingsFilter] } : base,
       { fields: { linkedProductId: 1, costPrice: 1, portfolioCode: 1 } }
     ).fetchAsync();
 
@@ -439,7 +441,7 @@ Write the analysis now:`;
    *   analyses; this function adds newly generated comments to it.
    * @returns {Promise<Array>} - productsDownSinceLaunch entries, worst loss first
    */
-  async function buildProductsDownSinceLaunch({ asOfDate, analysisData, language, commentBySymbol }) {
+  async function buildProductsDownSinceLaunch({ asOfDate, analysisData, language, commentBySymbol, productScope = null }) {
     const LOSS_THRESHOLD = -15;
 
     // 1. Live products, all templates
@@ -462,10 +464,15 @@ Write the analysis now:`;
       }).fetchAsync();
     }
 
+    // A scoped report covers the viewer's products, at their clients' cost
+    if (productScope) {
+      products = products.filter(p => productScope.productIds.has(String(p._id)));
+    }
+
     // 2. Latest bank prices + cost baselines
     const isins = [...new Set(products.map(p => p.isin && p.isin.toUpperCase()).filter(Boolean))];
     const priceMap = await getLatestBankPrices(isins, asOfDate);
-    const baselines = await getCostBaselines(products.map(p => p._id));
+    const baselines = await getCostBaselines(products.map(p => p._id), productScope?.holdingsFilter || null);
 
     // 3. Flag products down >= 15% vs their cost baseline
     let skippedNoPrice = 0;
@@ -706,10 +713,22 @@ Write the summary now:`;
       check(language, String);
       check(asOfDate, Match.Maybe(Date));
 
-      // Firm-wide dossier (every client's exposure): see-all roles only.
+      // Staff only. See-all roles get the firm-wide dossier; RMs and assistants
+      // a report on their own perimeter (products, notionals, cost baselines).
       const { requireRole } = await import('../../server/helpers/sessionAuth.js');
-      const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
-      const user = await requireRole(sessionId, SEE_ALL_ROLES);
+      const { STAFF_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      const { resolveScope, productIdsInScope, holdingsSelector } = await import('../../server/helpers/accessScope.js');
+      const { underlyingsAnalysisForUser } = await import('../../server/helpers/underlyingsScope.js');
+      const user = await requireRole(sessionId, STAFF_ROLES);
+      const scope = await resolveScope(user);
+      if (scope.denied) {
+        throw new Meteor.Error('not-authorized', 'No client perimeter');
+      }
+      const productScope = scope.isAdmin ? null : {
+        productIds: await productIdsInScope(scope),
+        holdingsFilter: await holdingsSelector(scope)
+      };
+      const scopedToUserId = scope.isAdmin ? null : user._id;
 
       if (asOfDate && asOfDate.getTime() > Date.now()) {
         throw new Meteor.Error('invalid-date', 'asOfDate cannot be in the future');
@@ -718,9 +737,7 @@ Write the summary now:`;
       console.log(`[RiskAnalysis] Starting risk analysis generation${asOfDate ? ` as of ${asOfDate.toISOString().slice(0, 10)}` : ''}...`);
       const startTime = Date.now();
 
-      const analysisData = asOfDate
-        ? await buildUnderlyingsAnalysis(asOfDate)
-        : await UnderlyingsAnalysisCollection.findOneAsync({ _id: 'phoenix_live_underlyings' });
+      const analysisData = await underlyingsAnalysisForUser(user, asOfDate);
 
       if (!analysisData) {
         throw new Meteor.Error('no-analysis-data', 'No underlyings analysis found. Please refresh the analysis first.');
@@ -743,7 +760,8 @@ Write the summary now:`;
           asOfDate,
           analysisData,
           language,
-          commentBySymbol: new Map()
+          commentBySymbol: new Map(),
+          productScope
         });
 
         const executiveSummary = productsDownSinceLaunch.length > 0
@@ -753,6 +771,7 @@ Write the summary now:`;
         const healthReport = {
           generatedAt: new Date(),
           generatedBy: user._id,
+          scopedToUserId, // null = firm-wide
           asOfDate: asOfDate || null,
           language,
           summary: {
@@ -829,7 +848,8 @@ Write the summary now:`;
         asOfDate,
         analysisData,
         language,
-        commentBySymbol
+        commentBySymbol,
+        productScope
       });
 
       // Generate executive summary
@@ -887,6 +907,7 @@ Write the summary now:`;
       const report = {
         generatedAt: new Date(),
         generatedBy: user._id,
+        scopedToUserId, // null = firm-wide
         asOfDate: asOfDate || null,
         language, // Store language for reference
         summary,

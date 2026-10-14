@@ -13,7 +13,7 @@ const TemplateManagement = ({ user, onNavigate, onEditTemplate }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   
   // Subscribe to templates
-  const isLoading = useSubscribe('templates');
+  const isLoading = useSubscribe('templates', localStorage.getItem('sessionId'));
   
   // Get templates from the database
   const { templates, categories } = useTracker(() => {
