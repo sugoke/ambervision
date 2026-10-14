@@ -5,10 +5,13 @@ import { ProductsCollection } from './products';
 import { MarketDataCacheCollection } from './marketDataCache';
 import { AllocationsCollection } from './allocations';
 import { ClientEntityHelpers } from './clientEntities';
+import { AthenaEvaluationHelpers } from './evaluators/athenaEvaluationHelpers';
 
 /**
  * UnderlyingsAnalysis Collection
- * Stores pre-computed analysis of underlyings for Phoenix products
+ * Stores pre-computed analysis of underlyings for barrier-protected products
+ * (Phoenix, Athena, reverse convertibles, bonus certificates...; capital-guaranteed
+ * products left out)
  * ONE document that contains the complete analysis, updated on-demand
  */
 export const UnderlyingsAnalysisCollection = new Mongo.Collection('underlyingsAnalysis');
@@ -113,6 +116,52 @@ export function summarizeUnderlyings(rows) {
   };
 }
 
+const isPhoenix = (product) =>
+  product.templateId === 'phoenix_autocallable' || product.template === 'phoenix_autocallable';
+
+const positiveNumber = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/** True when the product carries a capital guarantee / protection level (Orion, participation notes, shark, Himalaya floor, twin win with CP). */
+export function isCapitalGuaranteed(product) {
+  const sp = product.structureParams || {};
+  return [sp.capitalGuaranteed, sp.capitalGuarantee, sp.capitalProtection, sp.floor]
+    .some(v => v === true || positiveNumber(v) != null);
+}
+
+/**
+ * Level (% of initial) below which the capital is at risk, whatever the template
+ * stores it as: Phoenix / reverse convertibles (protectionBarrierLevel), bonus
+ * certificates (barrierLevel), twin win (lowerBarrier), Athena (final payoff
+ * tiers), or a protection barrier item in the drag-and-drop structure.
+ */
+export function protectionBarrierOf(product) {
+  const sp = product.structureParams || {};
+  const direct = positiveNumber(sp.protectionBarrierLevel) ??
+                 positiveNumber(sp.protectionBarrier) ??
+                 positiveNumber(sp.barrierLevel) ??
+                 positiveNumber(sp.lowerBarrier);
+  if (direct != null) return direct;
+
+  if (Array.isArray(sp.finalPayoffTiers) && sp.finalPayoffTiers.length > 0) {
+    const level = AthenaEvaluationHelpers.capitalAtRiskLevel(sp.finalPayoffTiers);
+    if (positiveNumber(level) != null) return level;
+  }
+
+  const item = (product.structure?.maturity || product.payoffStructure || []).find(
+    i => i.type === 'barrier' && i.barrier_type === 'protection'
+  );
+  return item ? positiveNumber(item.barrier_level ?? item.level) : null;
+}
+
+/** Products the underlyings page follows: barrier-protected payoffs, capital-guaranteed ones left out. */
+export function isBarrierProtectedProduct(product) {
+  if (isCapitalGuaranteed(product)) return false;
+  return isPhoenix(product) || protectionBarrierOf(product) != null;
+}
+
 /**
  * Build the complete underlyings analysis document.
  * @param {Date|null} asOfDate - null/undefined means live (today). A Date triggers
@@ -134,39 +183,25 @@ export async function buildUnderlyingsAnalysis(asOfDate = null, { allocationsFil
 
   let products;
   if (isHistorical) {
-    const allPhoenix = await ProductsCollection.find({
-      $or: [
-        { template: 'phoenix_autocallable' },
-        { templateId: 'phoenix_autocallable' }
-      ]
-    }).fetchAsync();
-    products = allPhoenix.filter(p => isProductLiveAsOf(p, asOfDate));
+    const allProducts = await ProductsCollection.find({}).fetchAsync();
+    products = allProducts.filter(p => isProductLiveAsOf(p, asOfDate));
   } else {
     products = await ProductsCollection.find({
-      $and: [
-        {
-          $or: [
-            { status: 'live' },
-            { status: 'Live' },
-            { status: 'active' },
-            { status: 'Active' },
-            { productStatus: 'live' },
-            { productStatus: 'Live' },
-            { productStatus: 'active' },
-            { productStatus: 'Active' }
-          ]
-        },
-        {
-          $or: [
-            { template: 'phoenix_autocallable' },
-            { templateId: 'phoenix_autocallable' }
-          ]
-        }
+      $or: [
+        { status: 'live' },
+        { status: 'Live' },
+        { status: 'active' },
+        { status: 'Active' },
+        { productStatus: 'live' },
+        { productStatus: 'Live' },
+        { productStatus: 'active' },
+        { productStatus: 'Active' }
       ]
     }).fetchAsync();
   }
+  products = products.filter(isBarrierProtectedProduct);
 
-  console.log(`[UnderlyingsAnalysis] Found ${products.length} Phoenix products (${mode})`);
+  console.log(`[UnderlyingsAnalysis] Found ${products.length} barrier-protected products (${mode})`);
 
   const marketDataCache = await MarketDataCacheCollection.find({}).fetchAsync();
   const marketDataMap = {};
@@ -239,25 +274,8 @@ export async function buildUnderlyingsAnalysis(asOfDate = null, { allocationsFil
       });
     }
 
-    const hasProtection = product.structureParams?.protectionBarrierLevel > 0 ||
-                         product.structureParams?.protectionBarrier > 0 ||
-                         (product.structure?.maturity || product.payoffStructure || []).some(
-                           item => item.type === 'barrier' && item.barrier_type === 'protection'
-                         );
-
-    let protectionBarrierLevel = null;
-    if (product.structureParams?.protectionBarrierLevel) {
-      protectionBarrierLevel = product.structureParams.protectionBarrierLevel;
-    } else if (product.structureParams?.protectionBarrier) {
-      protectionBarrierLevel = product.structureParams.protectionBarrier;
-    } else {
-      const protectionBarrier = (product.structure?.maturity || product.payoffStructure || []).find(
-        item => item.type === 'barrier' && item.barrier_type === 'protection'
-      );
-      if (protectionBarrier) {
-        protectionBarrierLevel = protectionBarrier.barrier_level || protectionBarrier.level;
-      }
-    }
+    const protectionBarrierLevel = protectionBarrierOf(product);
+    const hasProtection = protectionBarrierLevel != null;
 
     for (const underlying of productUnderlyings) {
       const fullTicker = underlying.securityData?.ticker ||
@@ -412,7 +430,7 @@ if (Meteor.isServer) {
 
   Meteor.methods({
     /**
-     * Generate and store underlyings analysis for live Phoenix products.
+     * Generate and store underlyings analysis for live barrier-protected products.
      * Every viewer reads the same cached result, filtered to their scope.
      */
     async 'underlyingsAnalysis.generate'(sessionId = null) {

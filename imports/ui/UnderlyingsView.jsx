@@ -561,7 +561,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             color: 'var(--text-primary)',
             letterSpacing: '-0.02em'
           }}>
-            Phoenix Autocallable - Underlying Assets
+            Barrier Products - Underlying Assets
           </h1>
           <p style={{
             margin: 0,
@@ -569,8 +569,8 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             color: 'var(--text-secondary)'
           }}>
             {asOfDateStr
-              ? `Historical view of Phoenix underlyings as of ${asOfDateStr}`
-              : 'Track performance of underlying assets in live Phoenix products'}
+              ? `Historical view of barrier-protected products' underlyings as of ${asOfDateStr}`
+              : 'Track performance of underlying assets in live barrier-protected products (capital-guaranteed excluded)'}
             {generatedAt && <span> • Generated: {generatedAt}</span>}
           </p>
         </div>
@@ -712,7 +712,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           border: '1px solid var(--border-color)'
         }}>
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Live Phoenix Products
+            Live Barrier Products
           </div>
           <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
             {summary.totalProducts}

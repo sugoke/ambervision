@@ -7,7 +7,7 @@ import { resolveScope } from '../helpers/accessScope.js';
 import { LIVE_ANALYSIS_ID, scopeLiveAnalysis } from '../helpers/underlyingsScope.js';
 
 /**
- * Phoenix underlyings analysis: one document of notional per product and ISIN.
+ * Underlyings analysis (barrier-protected products): one document of notional per product and ISIN.
  * See-all roles get the firm-wide document; everyone else gets it restricted
  * to the products their perimeter holds, with their own notionals.
  */
