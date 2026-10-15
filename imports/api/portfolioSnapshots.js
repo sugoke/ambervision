@@ -1,4 +1,4 @@
-import { PERIMETER_FLOW_TYPE_LIST, getSignedFlowAmount } from './helpers/twrCalculator.js';
+import { PERIMETER_FLOW_TYPE_LIST, getSignedFlowAmount, buildConsolidatedDailyValues, snapshotValueCurrency } from './helpers/twrCalculator.js';
 import { Mongo } from 'meteor/mongo';
 import { SecuritiesMetadataCollection } from './securitiesMetadata';
 import { getHoldingCategoryKey } from './assetClassification';
@@ -909,53 +909,98 @@ export const PortfolioSnapshotHelpers = {
    * Get aggregated snapshots across ALL clients (for admin "all clients" view)
    * Groups snapshots by date and sums values across all portfolios
    */
-  async getAggregatedSnapshots({ startDate, endDate }) {
-    const query = { portfolioCode: { $ne: 'CONSOLIDATED' } };
+  async getAggregatedSnapshots({ startDate, endDate, currency = 'EUR' }) {
+    // Firm-wide value per day, on the same basis as the PMS total:
+    // - demo clients and CONSOLIDATED roll-ups left out (fictional / double count)
+    // - credit lines, cards and spending accounts left out (isInvestmentAccount)
+    // - every account converted to `currency` at current spot before summing
+    //   (USD and EUR accounts were added as-is)
+    // - an account whose file is missing on a day keeps its last value for up to
+    //   10 days (buildConsolidatedDailyValues): summing only the files present
+    //   made the curve dip each time one bank was late
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const clauses = [{ portfolioCode: { $ne: 'CONSOLIDATED' } }];
 
+    const { ClientEntityHelpers } = await import('./clientEntities');
+    const demo = await ClientEntityHelpers.getDemoExclusion();
+    const demoNor = [];
+    if (demo.entityIds.length > 0) demoNor.push({ entityId: { $in: demo.entityIds } });
+    if (demo.userIds.length > 0) demoNor.push({ userId: { $in: demo.userIds } });
+    if (demoNor.length > 0) clauses.push({ $nor: demoNor });
+
+    // Read from 10 days before the start, so accounts whose file is late on the
+    // first day are carried in rather than missing
     if (startDate || endDate) {
-      query.snapshotDate = {};
-      if (startDate) query.snapshotDate.$gte = startDate;
-      if (endDate) query.snapshotDate.$lte = endDate;
+      const dateClause = {};
+      if (startDate) dateClause.$gte = new Date(new Date(startDate).getTime() - 10 * DAY_MS);
+      if (endDate) dateClause.$lte = endDate;
+      clauses.push({ snapshotDate: dateClause });
     }
 
-    console.log(`[SNAPSHOTS] getAggregatedSnapshots query:`, JSON.stringify(query));
-
-    // Get all snapshots across all users/portfolios (exclude CONSOLIDATED to avoid double-counting)
-    const rawSnapshots = await PortfolioSnapshotsCollection.find(query, {
+    const rawSnapshots = await PortfolioSnapshotsCollection.find({ $and: clauses }, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
 
-    console.log(`[SNAPSHOTS] getAggregatedSnapshots found ${rawSnapshots.length} raw snapshots`);
+    const { BankAccountsCollection, isInvestmentAccount } = await import('./bankAccounts');
+    const nonInvestment = new Set(
+      (await BankAccountsCollection.find(
+        { comment: { $regex: /credit|spending/i } },
+        { fields: { bankId: 1, accountNumber: 1, comment: 1 } }
+      ).fetchAsync())
+        .filter(a => !isInvestmentAccount(a))
+        .map(a => `${a.bankId}|${a.accountNumber}`)
+    );
 
-    // Filter out snapshots from banks with known bad historical data
-    const snapshots = dedupeSnapshotsPerAccountDay(filterSnapshotsByBankStartDate(rawSnapshots));
+    const snapshots = dedupeSnapshotsPerAccountDay(filterSnapshotsByBankStartDate(rawSnapshots))
+      .filter(s => !nonInvestment.has(`${s.bankId}|${s.portfolioCode}`));
 
-    // Group by date and sum values (skip weekends - banks don't report on weekends)
+    console.log(`[SNAPSHOTS] getAggregatedSnapshots: ${rawSnapshots.length} raw, ${snapshots.length} after dedupe and exclusions`);
+
+    const { buildEURRatesMap, convertCurrency } = await import('../../server/helpers/currencyHelpers.js');
+    const ratesMap = await buildEURRatesMap();
+    const missingRates = new Set();
+    const convert = (value, from) => {
+      if (!value) return value || 0;
+      const converted = convertCurrency(value, from || currency, currency, ratesMap);
+      if (converted === null) { missingRates.add(from); return value; }
+      return converted;
+    };
+
+    const { dailyValues } = buildConsolidatedDailyValues(snapshots, convert);
+    const totalByDate = new Map(dailyValues.map(d => [d.date, d.totalValue]));
+
+    // Weekend days are skipped: only the few banks that report then are present
+    const isWeekend = (dateKey) => {
+      const day = new Date(`${dateKey}T12:00:00Z`).getUTCDay();
+      return day === 0 || day === 6;
+    };
+    const startKey = startDate ? new Date(startDate).toISOString().slice(0, 10) : null;
+
     const dateMap = {};
     snapshots.forEach(s => {
-      // Skip weekends (Sunday = 0, Saturday = 6) - incomplete data causes chart dips
-      const dayOfWeek = s.snapshotDate.getDay();
-      if (dayOfWeek === 0 || dayOfWeek === 6) {
-        return;
-      }
-
       const dateKey = s.snapshotDate.toISOString().split('T')[0];
+      if (isWeekend(dateKey) || (startKey && dateKey < startKey)) return;
       if (!dateMap[dateKey]) {
         dateMap[dateKey] = {
-          snapshotDate: s.snapshotDate,
-          totalAccountValue: 0,
+          snapshotDate: new Date(`${dateKey}T00:00:00Z`),
+          totalAccountValue: totalByDate.get(dateKey) || 0,
           totalCostBasis: 0,
           totalCapitalInvested: 0,
           unrealizedPnL: 0,
-          positionCount: 0
+          positionCount: 0,
+          currency,
+          portfolioCurrency: currency
         };
       }
-      dateMap[dateKey].totalAccountValue += s.totalAccountValue || 0;
-      dateMap[dateKey].totalCostBasis += s.totalCostBasis || 0;
-      dateMap[dateKey].totalCapitalInvested += s.totalCapitalInvested || 0;
-      dateMap[dateKey].unrealizedPnL += s.unrealizedPnL || 0;
+      const ccy = snapshotValueCurrency(s);
+      dateMap[dateKey].totalCostBasis += convert(s.totalCostBasis, ccy);
+      dateMap[dateKey].totalCapitalInvested += convert(s.totalCapitalInvested, ccy);
+      dateMap[dateKey].unrealizedPnL += convert(s.unrealizedPnL, ccy);
       dateMap[dateKey].positionCount += s.positionCount || 0;
     });
+    if (missingRates.size > 0) {
+      console.warn(`[SNAPSHOTS] getAggregatedSnapshots: no ${currency} rate for ${[...missingRates].join(', ')}, amounts kept as is`);
+    }
 
     // Calculate unrealizedPnLPercent for aggregated data
     const result = Object.values(dateMap).map(d => ({

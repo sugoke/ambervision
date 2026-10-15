@@ -435,8 +435,11 @@ Meteor.methods({
       console.log(`[PERFORMANCE] Admin view: aggregating all clients`);
       snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
         startDate: start,
-        endDate: end
+        endDate: end,
+        currency: currency || 'EUR'
       });
+      convertedAtSpot = true;
+      currency = currency || 'EUR';
     } else {
       // Account-centric approach: the portfolio codes of the accounts in scope
       // (or the one asked for, once it is known to be in scope).
