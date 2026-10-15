@@ -2725,7 +2725,11 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       isin: position.isin,
       securityName: position.name,
       currency: position.currency || portfolioCurrency,
-      assetType: position.assetClass === 'equity' ? 'equity' :
+      // A security classified as held through a fund / ETF is ordered as one,
+      // whatever its asset class (a gold fund is Commodities + Fund)
+      assetType: SecuritiesMetadataCollection.findOne({ isin: position.isin })?.vehicle === 'fund' ? 'fund' :
+                 SecuritiesMetadataCollection.findOne({ isin: position.isin })?.vehicle === 'etf' ? 'etf' :
+                 position.assetClass === 'equity' ? 'equity' :
                  position.assetClass === 'bond' ? 'bond' :
                  position.assetClass === 'structured_product' ? 'structured_product' :
                  position.assetClass === 'fund' ? 'fund' : 'other',
@@ -2757,6 +2761,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       securityName: existingMetadata?.securityName || position.name || '',
       assetClass: existingMetadata?.assetClass || position.assetClass || '',
       assetSubClass: existingMetadata?.assetSubClass || position.assetSubClass || '',
+      vehicle: existingMetadata?.vehicle || '',
       structuredProductType: existingMetadata?.structuredProductType || '',
       structuredProductUnderlyingType: existingMetadata?.structuredProductUnderlyingType || '',
       structuredProductProtectionType: existingMetadata?.structuredProductProtectionType || '',

@@ -4,7 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { Random } from 'meteor/random';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, OrderFormatters, assetTypeForAssetClass, quotesPriceAsPercent, computeShortCallCoverage } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, OrderFormatters, assetTypeForSecurity, quotesPriceAsPercent, computeShortCallCoverage } from '/imports/api/orders';
 import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
 import { getAuthorizedEmails, accountAllowsOrders } from '/imports/api/bankAccounts';
@@ -547,13 +547,15 @@ const OrderModal = ({
   // indicative price — and rounds DOWN so the order never exceeds the amount.
   const [amountToConvert, setAmountToConvert] = useState('');
   const isFundUnits = assetType === ASSET_TYPES.FUND && fundQuantityMode !== FUND_QUANTITY_MODES.NOMINAL;
+  // "Other" instruments are sized like fund units: fractional units from an amount
+  const isOtherUnits = assetType === ASSET_TYPES.OTHER;
   const canConvertAmountToUnits = !isBulkMode
-    && (isFundUnits || assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF);
+    && (isFundUnits || isOtherUnits || assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF);
   const conversionPrice = priceType === PRICE_TYPES.LIMIT && parseFloat(limitPrice) > 0
     ? parseFloat(limitPrice)
     : (indicativePrice > 0 ? indicativePrice : (prefillData?.marketPrice > 0 ? prefillData.marketPrice : null));
   const conversionPriceSource = priceType === PRICE_TYPES.LIMIT && parseFloat(limitPrice) > 0 ? 'limit price' : 'last indicative price';
-  const unitDecimals = isFundUnits ? 4 : 0; // matches the units field's precision
+  const unitDecimals = (isFundUnits || isOtherUnits) ? 4 : 0; // matches the units field's precision
   const unitsForAmount = (amount) => {
     const amt = parseFloat(amount);
     if (!(amt > 0) || !(conversionPrice > 0)) return null;
@@ -1051,7 +1053,7 @@ const OrderModal = ({
     // turn the option into an equity sell the moment the underlying is chosen,
     // hide the contract block, and bring the position picker back.
     if (security.assetClass && assetType !== ASSET_TYPES.OPTION) {
-      setAssetType(assetTypeForAssetClass(security.assetClass));
+      setAssetType(assetTypeForSecurity(security));
     }
 
     // Set currency
@@ -1336,6 +1338,7 @@ const OrderModal = ({
               bankAccountId: selectedBankAccountId,
               clientId: selectedClientId,
               assetType,
+              isin: selectedSecurity?.isin || prefillData?.isin || undefined,
               estimatedValue: ev,
               orderType: mode,
               capitalProtected: assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode === 'buy' ? capitalProtected : undefined,
@@ -3191,6 +3194,7 @@ const OrderModal = ({
                           maxDecimals={
                             assetType === ASSET_TYPES.TERM_DEPOSIT ? 2
                             : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 2 : 4)
+                            : assetType === ASSET_TYPES.OTHER ? 4
                             : 0
                           }
                         />
@@ -3328,6 +3332,7 @@ const OrderModal = ({
                     maxDecimals={
                       assetType === ASSET_TYPES.TERM_DEPOSIT ? 2
                       : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 2 : 4)
+                      : assetType === ASSET_TYPES.OTHER ? 4
                       : 0
                     }
                   />
@@ -5355,7 +5360,7 @@ const OrderModal = ({
   const renderStepOrderType = () => {
     // Only offer positions matching the selected asset type — selling a fund
     // shouldn't list structured products.
-    const typeHoldings = accountHoldings.filter(h => assetTypeForAssetClass(h.assetClass) === assetType);
+    const typeHoldings = accountHoldings.filter(h => assetTypeForSecurity(h) === assetType);
     // Does selling this asset type mean selling an existing position?
     //
     // For equities, funds and the rest, yes: the sell side starts from a holding
@@ -5557,7 +5562,7 @@ const OrderModal = ({
                   const key = `${o.clientId}_${o.bankAccountId}`;
                   const cash = bulkCashBalances[key];
                   const holdings = bulkAccountHoldings[key]
-                    && bulkAccountHoldings[key].filter(h => assetTypeForAssetClass(h.assetClass) === assetType);
+                    && bulkAccountHoldings[key].filter(h => assetTypeForSecurity(h) === assetType);
                   return (
                     <div key={key} style={{ paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
                       <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -5664,7 +5669,7 @@ const OrderModal = ({
                           enrichFromProduct(holding.isin);
                         }
                         if (holding.assetClass) {
-                          setAssetType(assetTypeForAssetClass(holding.assetClass));
+                          setAssetType(assetTypeForSecurity(holding));
                         }
                       }}
                       style={{

@@ -10,7 +10,8 @@ import {
   STRUCTURED_PRODUCT_UNDERLYING_TYPES,
   STRUCTURED_PRODUCT_PROTECTION_TYPES,
   EQUITY_SUB_CLASSES,
-  FIXED_INCOME_SUB_CLASSES
+  FIXED_INCOME_SUB_CLASSES,
+  SECURITY_VEHICLES
 } from '../../api/securitiesMetadata.js';
 
 export default function SecurityClassificationModal({ security, onSave, onClose }) {
@@ -19,6 +20,7 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
     securityName: security.securityName || '',
     assetClass: security.assetClass || '',
     assetSubClass: security.assetSubClass || '',
+    vehicle: security.vehicle || '',
     // Structured product specific fields
     structuredProductType: security.structuredProductType || '',
     structuredProductUnderlyingType: security.structuredProductUnderlyingType || '',
@@ -581,6 +583,24 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
                 </option>
               ))}
             </select>
+          </div>
+
+          <div style={formGroupStyle}>
+            <label style={labelStyle}>Vehicle</label>
+            <select
+              value={formData.vehicle}
+              onChange={(e) => handleChange('vehicle', e.target.value)}
+              style={inputStyle}
+            >
+              {SECURITY_VEHICLES.map(v => (
+                <option key={v.value} value={v.value}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+              How it is held. A fund is ordered as fund units; allocation and profile limits still follow the asset class (e.g. a gold fund: Commodities + Fund).
+            </div>
           </div>
 
           {/* Structured Product Classification */}

@@ -256,6 +256,18 @@ async function findAccountHoldings(resolved, bankAccount) {
   if (holdings.length === 0) {
     holdings = await PMSHoldingsCollection.find(holdingsQuery, holdingsOpts).fetchAsync();
   }
+
+  // The vehicle (fund / ETF) from the curated classification decides the order
+  // type a position is sold as (see assetTypeForSecurity)
+  const isins = [...new Set(holdings.map(h => h.isin).filter(Boolean))];
+  if (isins.length > 0) {
+    const vehicleRecords = await SecuritiesMetadataCollection.find(
+      { isin: { $in: isins }, vehicle: { $nin: [null, ''] } },
+      { fields: { isin: 1, vehicle: 1 } }
+    ).fetchAsync();
+    const vehicleByIsin = new Map(vehicleRecords.map(r => [r.isin, r.vehicle]));
+    holdings.forEach(h => { if (vehicleByIsin.has(h.isin)) h.vehicle = vehicleByIsin.get(h.isin); });
+  }
   return holdings;
 }
 
@@ -477,7 +489,7 @@ async function resolveClientId(clientId) {
  * Check allocation impact of a new order against profile limits.
  * Reusable by both the preview method and inline in orders.create.
  */
-async function checkAllocationImpact({ bankAccountId, clientId, assetType, estimatedValue, capitalProtected }) {
+async function checkAllocationImpact({ bankAccountId, clientId, assetType, isin, estimatedValue, capitalProtected }) {
   const storedProfile = await AccountProfilesCollection.findOneAsync({ bankAccountId });
   // "No profile" accounts have no limits to check, like accounts without a profile
   const profile = limitsProfile(storedProfile);
@@ -558,8 +570,17 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
   // Current allocation
   const currentAllocation = aggregateToFourCategories(assetClassBreakdown, totalValue);
 
-  // Projected allocation: add estimated value to the appropriate breakdown key
-  const breakdownKey = getBreakdownKeyForAssetType(assetType, !!capitalProtected);
+  // Projected allocation: add estimated value to the appropriate breakdown key.
+  // A security with a curated classification counts where its asset class says
+  // (a gold fund ordered as fund units is Commodities, not equity); otherwise
+  // the order type decides. Structured products keep the order's own
+  // capital-protection answer.
+  const orderMetadata = isin && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT
+    ? (metadataMap[isin] || await SecuritiesMetadataCollection.findOneAsync({ isin }))
+    : null;
+  const breakdownKey = orderMetadata?.assetClass
+    ? getHoldingCategoryKey({ isin }, orderMetadata)
+    : getBreakdownKeyForAssetType(assetType, !!capitalProtected);
   const projectedBreakdown = { ...assetClassBreakdown };
   projectedBreakdown[breakdownKey] = (projectedBreakdown[breakdownKey] || 0) + estimatedValue;
   const projectedTotal = totalValue + estimatedValue;
@@ -587,7 +608,9 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
     }
   }
 
-  const orderCategory = mapOrderAssetTypeToProfileCategory(assetType, { capitalProtected: !!capitalProtected });
+  const orderCategory = orderMetadata?.assetClass
+    ? Object.entries(aggregateToFourCategories({ [breakdownKey]: 1 }, 1)).find(([, v]) => v > 0)?.[0] || 'alternative'
+    : mapOrderAssetTypeToProfileCategory(assetType, { capitalProtected: !!capitalProtected });
 
   return {
     hasProfile: true,
@@ -1177,6 +1200,7 @@ Meteor.methods({
           bankAccountId: orderData.bankAccountId,
           clientId: orderData.clientId,
           assetType: orderData.assetType,
+          isin: orderData.isin ? orderData.isin.toUpperCase() : undefined,
           estimatedValue: orderData.estimatedValue,
           capitalProtected: orderData.capitalProtected
         });
@@ -8150,10 +8174,11 @@ Meteor.methods({
    * Check allocation impact of a buy order against investment profile limits
    * Returns current vs projected allocation and any breaches (warning only)
    */
-  async 'orders.checkAllocationImpact'({ bankAccountId, clientId, assetType, estimatedValue, orderType, capitalProtected, sessionId }) {
+  async 'orders.checkAllocationImpact'({ bankAccountId, clientId, assetType, isin, estimatedValue, orderType, capitalProtected, sessionId }) {
     check(bankAccountId, String);
     check(clientId, String);
     check(assetType, String);
+    check(isin, Match.Maybe(String));
     check(estimatedValue, Match.Maybe(Number));
     check(orderType, String);
     check(capitalProtected, Match.Maybe(Boolean));
@@ -8183,6 +8208,7 @@ Meteor.methods({
       bankAccountId,
       clientId,
       assetType,
+      isin: isin ? isin.toUpperCase() : undefined,
       estimatedValue,
       capitalProtected: !!capitalProtected
     });

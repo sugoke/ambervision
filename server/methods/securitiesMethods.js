@@ -102,7 +102,7 @@ Meteor.methods({
 
         // Keep existing orders (the order book) in sync with the new asset type
         // and the harmonized display name.
-        const orderResult = await OrderHelpers.reclassifyByIsin(isin, { securityType, securityName: dataToSave.securityName });
+        const orderResult = await OrderHelpers.reclassifyByIsin(isin, { securityType, securityName: dataToSave.securityName, vehicle: dataToSave.vehicle });
         console.log(`[SECURITIES_METADATA] Propagated classification to ${orderResult.modifiedCount} orders (assetType: ${orderResult.assetType})`);
       } catch (propError) {
         // Log but don't fail the main operation - metadata saved successfully
@@ -1413,7 +1413,9 @@ Meteor.methods({
       };
       // Filter by asset class if specified (skip the filter for ISIN queries)
       if (isMarketInstrument && !isIsinQuery) {
-        metaQuery.assetClass = assetType;
+        // A fund/ETF tab also finds securities held through that vehicle
+        // whatever their asset class (a gold fund is classed Commodities)
+        metaQuery.$and = [{ $or: [{ assetClass: assetType }, { vehicle: assetType }] }];
       } else if (isStructuredProduct && !isIsinQuery) {
         metaQuery.assetClass = 'structured_product';
       }
@@ -1450,6 +1452,7 @@ Meteor.methods({
             exchange: sec.listingExchange,
             currency: sec.currency || productCurrencyByIsin[sec.isin.toUpperCase()] || null,
             assetClass: sec.assetClass,
+            vehicle: sec.vehicle || null,
             source: 'metadata'
           });
         }
@@ -1489,7 +1492,20 @@ Meteor.methods({
       });
     }
 
-    return results.slice(0, limit);
+    // The vehicle (fund / ETF) decides the order type, so attach it to results
+    // found through other sources too (price feed, holdings) — they would
+    // otherwise be ordered by their asset class alone.
+    const page = results.slice(0, limit);
+    const isinsWithoutVehicle = page.filter(r => r.isin && r.vehicle === undefined).map(r => r.isin);
+    if (isinsWithoutVehicle.length > 0) {
+      const vehicleRecords = await SecuritiesMetadataCollection.find(
+        { isin: { $in: isinsWithoutVehicle }, vehicle: { $nin: [null, ''] } },
+        { fields: { isin: 1, vehicle: 1 } }
+      ).fetchAsync();
+      const vehicleByIsin = new Map(vehicleRecords.map(r => [r.isin, r.vehicle]));
+      page.forEach(r => { if (vehicleByIsin.has(r.isin)) r.vehicle = vehicleByIsin.get(r.isin); });
+    }
+    return page;
   },
 
   /**

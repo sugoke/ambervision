@@ -360,6 +360,18 @@ export function assetTypeForAssetClass(assetClass) {
   return ASSET_CLASS_TO_ASSET_TYPE[String(assetClass).toLowerCase()] || ASSET_TYPES.OTHER;
 }
 
+// The vehicle a security is held through (securitiesMetadata.vehicle) decides
+// how it is ordered: a gold fund is asset class Commodities but is bought as
+// fund units. Without a vehicle the asset class decides, as before.
+const VEHICLE_TO_ASSET_TYPE = {
+  fund: ASSET_TYPES.FUND,
+  etf: ASSET_TYPES.ETF
+};
+
+export function assetTypeForSecurity({ assetClass, vehicle } = {}) {
+  return VEHICLE_TO_ASSET_TYPE[vehicle] || assetTypeForAssetClass(assetClass);
+}
+
 // Valid trade modes
 export const TRADE_MODES = {
   INDIVIDUAL: 'individual',
@@ -1041,7 +1053,7 @@ export const OrderHelpers = {
   // classification changes in SecuritiesBase, every order referencing that ISIN
   // should show the same asset type (mirrors PMSHoldingsHelpers.reclassifyByIsin).
   // Returns the number of orders updated. Server-side only.
-  async reclassifyByIsin(isin, { securityType, securityName } = {}) {
+  async reclassifyByIsin(isin, { securityType, securityName, vehicle } = {}) {
     if (!isin) throw new Error('ISIN is required for reclassification');
     if (!securityType) throw new Error('securityType is required for reclassification');
 
@@ -1052,7 +1064,8 @@ export const OrderHelpers = {
       return { modifiedCount: 0, isin, assetType: null, skipped: 'placeholder-isin' };
     }
 
-    const assetType = SECURITY_TYPE_TO_ASSET_TYPE[securityType] || ASSET_TYPES.OTHER;
+    // A fund / ETF vehicle wins over the asset class (see assetTypeForSecurity)
+    const assetType = VEHICLE_TO_ASSET_TYPE[vehicle] || SECURITY_TYPE_TO_ASSET_TYPE[securityType] || ASSET_TYPES.OTHER;
 
     const $set = { assetType, updatedAt: new Date() };
     // Harmonize the display name across banks. Bank's raw `securityName` is left

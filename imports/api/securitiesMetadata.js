@@ -66,6 +66,15 @@ export const STRUCTURED_PRODUCT_TYPES = [
   { value: 'other', label: 'Other Structured Product' }
 ];
 
+// How the exposure is held — independent of the asset class. A gold fund is
+// asset class Commodities (allocation, limits) held through a Fund (orders are
+// placed as fund units). Empty = held directly / not specified.
+export const SECURITY_VEHICLES = [
+  { value: '', label: 'Direct / not specified' },
+  { value: 'fund', label: 'Fund' },
+  { value: 'etf', label: 'ETF' }
+];
+
 // Equity sub-classes
 export const EQUITY_SUB_CLASSES = [
   { value: '', label: 'Not Specified' },
