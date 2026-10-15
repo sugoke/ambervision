@@ -205,6 +205,24 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     }}
                   />
                 </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Issue Price (% of denomination)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.issuePrice ?? 100}
+                    min="0"
+                    max="100"
+                    step="any"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={commitOnChange('issuePrice')}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    100% for a standard note. Below par for loan-to-value notes (e.g. 43.35%): the gap is deducted from the redemption and returns are shown on the price paid.
+                  </div>
+                </div>
               </div>
 
               {/* Features Section */}

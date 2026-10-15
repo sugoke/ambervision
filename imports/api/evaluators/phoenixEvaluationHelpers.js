@@ -433,6 +433,50 @@ export const PhoenixEvaluationHelpers = {
   },
 
   /**
+   * Capital repaid at maturity (% of denomination) for a basket level (% of initial).
+   * Above the protection barrier the capital is returned in full. Below it the loss is
+   * that of a put on the strike: (strike − level) × 100/strike.
+   *  - strike = barrier (geared put): 60% level, 70% barrier/strike → 85.71%
+   *  - strike = 100 (standard barrier): 60% level, 70% barrier → 60%
+   * A product with no strike on file keeps the geared formula (strike = barrier).
+   */
+  calculateCapitalAtMaturity(currentLevel, phoenixParams) {
+    const protectionBarrier = phoenixParams?.protectionBarrier || 100;
+    const strike = phoenixParams?.strike || protectionBarrier;
+
+    if (currentLevel >= protectionBarrier) {
+      return {
+        capitalReturn: 100,
+        isAboveBarrier: true,
+        capitalExplanation: `Basket at ${currentLevel.toFixed(2)}% (above ${protectionBarrier}% barrier) = 100% capital`
+      };
+    }
+
+    const shortfall = Math.max(0, strike - currentLevel);
+    const loss = shortfall * (100 / strike);
+    const capitalReturn = 100 - loss;
+    const capitalExplanation = strike === 100
+      ? `Basket at ${currentLevel.toFixed(2)}% (below ${protectionBarrier}% barrier) = ${capitalReturn.toFixed(2)}% capital`
+      : `Basket at ${currentLevel.toFixed(2)}% (below ${protectionBarrier}% barrier): (${strike}% strike − ${currentLevel.toFixed(2)}%) × (100/${strike}) = loss ${loss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
+
+    return { capitalReturn, isAboveBarrier: false, capitalExplanation };
+  },
+
+  /**
+   * Loan-to-value notes are bought below par (issue price, e.g. 43.35%): the gap to
+   * 100% is a financing that the issuer takes back out of the redemption, which can
+   * never go below zero. Returns are then measured on the price actually paid.
+   * With an issue price of 100% this is a no-op.
+   */
+  applyIssuePrice(grossValue, phoenixParams) {
+    const issuePrice = phoenixParams?.issuePrice || 100;
+    const financing = Math.max(0, 100 - issuePrice);
+    const netValue = Math.max(0, grossValue - financing);
+    const returnOnPricePaid = ((netValue - issuePrice) / issuePrice) * 100;
+    return { issuePrice, financing, netValue, returnOnPricePaid };
+  },
+
+  /**
    * Calculate indicative maturity value if product were to mature today
    * Shows hypothetical redemption: capital + earned coupons
    * Only for live Phoenix products
@@ -467,7 +511,7 @@ export const PhoenixEvaluationHelpers = {
     // Example: -35% performance means current level is 65% of strike
     const currentLevel = 100 + basketPerformance;
 
-    // Calculate capital return based on protection barrier logic
+    // Calculate capital return based on protection barrier and strike
     let capitalReturn;
     let capitalExplanation;
 
@@ -475,19 +519,8 @@ export const PhoenixEvaluationHelpers = {
       // Autocalled: full capital return
       capitalReturn = 100;
       capitalExplanation = `Product autocalled = 100% capital`;
-    } else if (basketPerformance >= (protectionBarrier - 100)) {
-      // Above protection barrier: full capital return (100%)
-      capitalReturn = 100;
-      capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (above ${protectionBarrier}% barrier) = 100% capital`;
     } else {
-      // Below protection barrier: geared loss calculation
-      // Step 1: Calculate breach amount
-      const breachAmount = protectionBarrier - currentLevel;
-      // Step 2: Apply gearing factor (breach × 100/barrier)
-      const gearedLoss = breachAmount * (100 / protectionBarrier);
-      // Step 3: Calculate capital return
-      capitalReturn = 100 - gearedLoss;
-      capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (below ${protectionBarrier}% barrier): breach ${breachAmount.toFixed(2)}% × (100/${protectionBarrier}) = loss ${gearedLoss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
+      ({ capitalReturn, capitalExplanation } = this.calculateCapitalAtMaturity(currentLevel, phoenixParams));
     }
 
     // Get coupons from observation schedule
@@ -499,11 +532,11 @@ export const PhoenixEvaluationHelpers = {
     const isAboveBarrier = basketPerformance >= (protectionBarrier - 100);
     const memoryCouponsIncluded = isAboveBarrier ? totalMemoryCoupons : 0;
 
-    // Calculate total value
-    const totalValue = capitalReturn + totalCouponsEarned + memoryCouponsIncluded;
-
-    // P&L: net return vs 100% initial investment
-    const pnl = totalValue - 100;
+    // Calculate total value (net of the financing on a note bought below par)
+    const grossValue = capitalReturn + totalCouponsEarned + memoryCouponsIncluded;
+    const { issuePrice, financing, netValue: totalValue, returnOnPricePaid: pnl } =
+      this.applyIssuePrice(grossValue, phoenixParams);
+    const isBelowPar = issuePrice < 100;
 
     // Return pre-formatted object for display
     return {
@@ -533,6 +566,13 @@ export const PhoenixEvaluationHelpers = {
 
       totalValue: totalValue,
       totalValueFormatted: totalValue.toFixed(2) + '%',
+
+      // Loan-to-value notes: price paid, financing taken back at maturity
+      isBelowPar,
+      issuePrice,
+      issuePriceFormatted: issuePrice.toFixed(2) + '%',
+      financing,
+      financingFormatted: '-' + financing.toFixed(2) + '%',
 
       pnl: pnl,
       pnlFormatted: (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%',

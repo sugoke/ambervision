@@ -195,6 +195,18 @@ export const PhoenixEvaluator = {
       if (product.structureParams.couponFrequency) {
         params.observationFrequency = product.structureParams.couponFrequency;
       }
+
+      // Strike of the put below the barrier (100 = standard, = barrier = geared)
+      const strike = Number(product.structureParams.strike);
+      if (strike > 0) {
+        params.strike = strike;
+      }
+
+      // Price paid as % of denomination: below 100 for loan-to-value notes
+      const issuePrice = Number(product.structureParams.issuePrice);
+      if (issuePrice > 0) {
+        params.issuePrice = issuePrice;
+      }
     }
 
     return params;
@@ -1173,24 +1185,12 @@ export const PhoenixEvaluator = {
       if (targetObservation.isFinal) {
         prediction.isFinalObservation = true;
 
-        // Calculate capital return using proper geared loss formula
-        let capitalReturn = 100;
-        let capitalExplanation = '';
-
+        // Capital return from the protection barrier and the strike of the put
         const barrierThreshold = protectionBarrier - 100; // e.g., 70% barrier = -30% threshold
-
-        if (currentBasketLevel >= barrierThreshold) {
-          // Above protection barrier: full capital return
-          capitalReturn = 100;
-          capitalExplanation = `Basket at ${currentBasketLevelFormatted} (above ${protectionBarrier}% barrier) = 100% capital`;
-        } else {
-          // Below protection barrier: geared loss calculation
-          const currentLevel = 100 + currentBasketLevel; // e.g., -40% perf = 60% level
-          const breachAmount = protectionBarrier - currentLevel; // e.g., 70 - 60 = 10% breach
-          const gearedLoss = breachAmount * (100 / protectionBarrier); // e.g., 10 × (100/70) = 14.29% loss
-          capitalReturn = 100 - gearedLoss; // e.g., 100 - 14.29 = 85.71%
-          capitalExplanation = `Basket at ${(currentLevel).toFixed(2)}% (below ${protectionBarrier}% barrier): breach ${breachAmount.toFixed(2)}% × (100/${protectionBarrier}) = loss ${gearedLoss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
-        }
+        const { capitalReturn, capitalExplanation } = PhoenixEvaluationHelpers.calculateCapitalAtMaturity(
+          100 + currentBasketLevel, // e.g., -40% perf = 60% level
+          phoenixParams
+        );
 
         // Calculate coupon components
         const couponsEarned = totalCouponsEarned || 0;
@@ -1200,8 +1200,11 @@ export const PhoenixEvaluator = {
         const isAboveBarrier = currentBasketLevel >= barrierThreshold;
         const memoryCouponsPaid = isAboveBarrier ? memoryCouponsAvailable : 0;
 
-        // Total redemption amount
-        const redemptionAmount = capitalReturn + couponsEarned + memoryCouponsPaid;
+        // Total redemption amount (net of the financing on a note bought below par)
+        const { netValue: redemptionAmount } = PhoenixEvaluationHelpers.applyIssuePrice(
+          capitalReturn + couponsEarned + memoryCouponsPaid,
+          phoenixParams
+        );
 
         // Add detailed breakdown to prediction
         prediction.capitalReturn = capitalReturn;
@@ -1231,7 +1234,10 @@ export const PhoenixEvaluator = {
         if (isAboveBarrier) {
           prediction.explanation = `Final observation. Basket at ${currentBasketLevelFormatted} (above ${protectionBarrier}% barrier). Total return: ${prediction.capitalReturnFormatted} capital + ${prediction.couponsEarnedFormatted} coupons${memoryCouponsPaid > 0 ? ` + ${prediction.memoryCouponsFormatted} memory` : ''} = ${prediction.redemptionAmountFormatted}.`;
         } else {
-          prediction.explanation = `Final observation. Basket at ${currentBasketLevelFormatted} (below ${protectionBarrier}% barrier). Capital return ${prediction.capitalReturnFormatted} (geared loss applied)${couponsEarned > 0 ? ` + ${prediction.couponsEarnedFormatted} coupons` : ''}${prediction.memoryCouponsForfeit ? `. Memory coupons ${prediction.memoryCouponsFormatted} forfeited` : ''}.`;
+          prediction.explanation = `Final observation. Basket at ${currentBasketLevelFormatted} (below ${protectionBarrier}% barrier). Capital return ${prediction.capitalReturnFormatted}${couponsEarned > 0 ? ` + ${prediction.couponsEarnedFormatted} coupons` : ''}${prediction.memoryCouponsForfeit ? `. Memory coupons ${prediction.memoryCouponsFormatted} forfeited` : ''}.`;
+        }
+        if (phoenixParams.issuePrice && phoenixParams.issuePrice < 100) {
+          prediction.explanation += ` Less ${(100 - phoenixParams.issuePrice).toFixed(2)}% financing (issued at ${phoenixParams.issuePrice}%) = ${prediction.redemptionAmountFormatted}.`;
         }
       }
 

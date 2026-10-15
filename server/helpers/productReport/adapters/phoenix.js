@@ -76,6 +76,7 @@ export default {
         { label: t('couponsTotal'), value: f.pctOf(imv.couponsEarned) }
       ];
       if (imv.memoryCouponsForfeit && imv.memoryCouponsForfeitAmount > 0) rows.push({ label: t('memoryForfeit'), value: f.pctOf(imv.memoryCouponsForfeitAmount), muted: true });
+      if (imv.isBelowPar) rows.push({ label: t('financingDeducted', { issuePrice: f.pctOf(imv.issuePrice) }), value: `-${f.pctOf(imv.financing)}`, muted: true });
       rows.push({ label: t('totalValue'), value: f.pctOf(imv.totalValue), strong: true });
       rows.push({ label: t('pnl'), value: f.signedPctOf(imv.pnl), tone: imv.pnl >= 0 ? 'pos' : 'neg' });
       const intact = basketLevel !== null && protection !== null && basketLevel >= protection;

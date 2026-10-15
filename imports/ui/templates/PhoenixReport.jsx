@@ -1091,7 +1091,7 @@ const PhoenixReport = ({ results, productId, product }) => {
             }}>
               {iv.totalValueFormatted}
             </div>
-            {isFinal && (
+            {(isFinal || iv.isBelowPar) && (
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
@@ -1099,7 +1099,12 @@ const PhoenixReport = ({ results, productId, product }) => {
                 fontFamily: 'monospace',
                 marginTop: '0.5rem'
               }}>
-                {tr.netPnl}: {iv.pnlFormatted}
+                {iv.isBelowPar ? tr.returnOnPricePaid : tr.netPnl}: {iv.pnlFormatted}
+              </div>
+            )}
+            {iv.isBelowPar && (
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.35rem' }}>
+                {tr.issuePrice}: {iv.issuePriceFormatted}
               </div>
             )}
             <div style={{
@@ -1223,6 +1228,43 @@ const PhoenixReport = ({ results, productId, product }) => {
                   {iv.memoryCouponsForfeit
                     ? `⚠️ ${tr.forfeitedBelowBarrier}`
                     : tr.accumulatedInMemory}
+                </div>
+              </div>
+            )}
+
+            {/* Financing deducted (loan-to-value notes bought below par) */}
+            {iv.isBelowPar && (
+              <div style={{
+                background: 'var(--bg-secondary)',
+                padding: '1.25rem',
+                borderRadius: '6px',
+                border: '1px solid var(--border-color)'
+              }}>
+                <div style={{
+                  fontSize: '0.7rem',
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase',
+                  marginBottom: '0.75rem',
+                  fontWeight: '700',
+                  letterSpacing: '0.5px'
+                }}>
+                  🏦 {tr.financingDeducted}
+                </div>
+                <div style={{
+                  fontSize: '1.8rem',
+                  fontWeight: '700',
+                  color: 'var(--loss-color)',
+                  marginBottom: '0.5rem',
+                  fontFamily: 'monospace'
+                }}>
+                  {iv.financingFormatted}
+                </div>
+                <div style={{
+                  fontSize: '0.7rem',
+                  color: 'var(--text-muted)',
+                  lineHeight: '1.4'
+                }}>
+                  {tr.financingExplanation}
                 </div>
               </div>
             )}
