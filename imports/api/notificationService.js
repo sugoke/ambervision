@@ -56,6 +56,21 @@ export async function resolveClientRmIds({ clientIds = [], bankAccountIds = [] }
 
 export const NotificationService = {
   /**
+   * Active allocations of a product held by current clients. Archived
+   * (closed-relationship) and demo clients are left out: a product only they
+   * hold is not held by anyone we follow.
+   */
+  async getHeldAllocations(productId) {
+    const hiddenExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+    return AllocationsCollection.find({
+      $and: [
+        { productId, status: 'active' },
+        hiddenExclusion
+      ]
+    }).fetchAsync();
+  },
+
+  /**
    * Process events and create notifications (email sending handled by daily digest)
    * @param {Object} product - Product data
    * @param {Array} events - Array of detected events
@@ -66,6 +81,19 @@ export const NotificationService = {
     if (!events || events.length === 0) {
       console.log('[NotificationService] No events to process');
       return;
+    }
+
+    // Every holder of the product has left (archived) or is a demo client: no
+    // one we follow holds it, so there is nothing to alert about. A product
+    // with no allocation at all still alerts admins - its position may simply
+    // not be linked to an allocation yet.
+    const [heldAllocations, anyActiveAllocation] = await Promise.all([
+      this.getHeldAllocations(product._id),
+      AllocationsCollection.findOneAsync({ productId: product._id, status: 'active' }, { fields: { _id: 1 } })
+    ]);
+    if (anyActiveAllocation && heldAllocations.length === 0) {
+      console.log(`[NotificationService] Skipping ${events.length} event(s) for ${product.isin || product._id}: only held by archived or demo clients`);
+      return [];
     }
 
     console.log(`[NotificationService] Processing ${events.length} events for product ${product._id}`);
@@ -148,15 +176,9 @@ export const NotificationService = {
     });
 
     // 3. Get allocations for this product — exclude archived (closed-relationship)
-    // clients so their RM is no longer notified. Admins/superadmins above still
-    // receive everything; active co-holders of the same product are unaffected.
-    const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
-    const allocations = await AllocationsCollection.find({
-      $and: [
-        { productId: product._id, status: 'active' },
-        archivedAllocExclusion
-      ]
-    }).fetchAsync();
+    // clients so their RM is no longer notified. Active co-holders of the same
+    // product are unaffected.
+    const allocations = await this.getHeldAllocations(product._id);
 
     // 4. Relationship managers of the clients holding the product - entity-era
     // clients record their RMs on the entity and the account, not on a login
@@ -185,7 +207,6 @@ export const NotificationService = {
    */
   async getNotificationsForCronRun(cronJobRunId) {
     const { NotificationsCollection } = await import('./notifications');
-    const { AllocationsCollection } = await import('./allocations');
     const { ProductsCollection } = await import('./products');
 
     // Get all notifications from this cron run
@@ -197,18 +218,16 @@ export const NotificationService = {
     // Enrich notifications with product allocation data
     const enrichedNotifications = await Promise.all(
       notifications.map(async (notification) => {
-        // Get product allocation data
-        const allocations = await AllocationsCollection.find({
-          productId: notification.productId,
-          status: 'active'
-        }).fetchAsync();
+        // Amount and clients currently invested: archived clients' allocations
+        // are not counted (they would show money that is no longer with us)
+        const allocations = await this.getHeldAllocations(notification.productId);
 
         const totalNominalInvested = allocations.reduce(
           (sum, alloc) => sum + (alloc.nominalInvested || 0),
           0
         );
 
-        const clientCount = new Set(allocations.map(a => a.clientId)).size;
+        const clientCount = new Set(allocations.map(a => a.entityId || a.clientId)).size;
 
         // Get product for additional details
         const product = await ProductsCollection.findOneAsync({ _id: notification.productId });
