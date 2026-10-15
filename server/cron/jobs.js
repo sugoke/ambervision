@@ -648,6 +648,14 @@ async function productRevaluationJob(options = {}) {
       console.log(`[CRON] Stale data summary: ${productsWithStaleData} products evaluated with failed market data tickers`);
     }
 
+    // Underlyings page: fresh closes and the current client positions
+    try {
+      const { refreshLiveUnderlyingsAnalysis } = await import('/imports/api/underlyingsAnalysis.js');
+      await refreshLiveUnderlyingsAnalysis();
+    } catch (error) {
+      console.error('[CRON] Underlyings analysis refresh failed:', error.message);
+    }
+
     // Update schedule info
     scheduleInfo.productRevaluation.lastFinishedAt = new Date();
     scheduleInfo.productRevaluation.nextScheduledRun = getNextRunTime(scheduleInfo.productRevaluation.schedule);

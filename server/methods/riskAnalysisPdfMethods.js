@@ -1,69 +1,35 @@
 /**
  * Risk Analysis PDF Methods
  *
- * Server methods for fetching Risk Analysis report data for PDF generation.
- * These methods authenticate via PDF token instead of session,
- * allowing Puppeteer to access data without a real session.
+ * Server method feeding the underlyings risk report PDF (RiskAnalysisPDF.jsx).
+ * It authenticates via PDF token instead of session, allowing Puppeteer to
+ * access data without a real session.
  */
 
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
+import { check, Match } from 'meteor/check';
 import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
-import { isSeeAll, isStaff } from '../helpers/accessPolicy.js';
-
-/**
- * Validate PDF token and return the user
- */
-async function validatePdfToken(userId, pdfToken) {
-  if (!userId || !pdfToken) {
-    throw new Meteor.Error('invalid-params', 'Missing userId or pdfToken');
-  }
-
-  // See server/helpers/pdfAccessTokens.js — one token per generation, so a
-  // retry cannot invalidate the run that is still rendering.
-  const user = await findUserByPdfAccessToken(userId, pdfToken);
-
-  if (!user) {
-    throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
-  }
-
-  return user;
-}
 
 Meteor.methods({
   /**
-   * Get Risk Analysis report for PDF generation
+   * The whole report: every figure, label and page break, built server-side by
+   * buildRiskReport, which also applies the read rule (see-all roles any
+   * report, other staff the reports they generated).
    */
-  async 'riskAnalysis.getReportForPdf'({ reportId, userId, pdfToken }) {
+  async 'riskAnalysis.getReportForPdf'({ reportId, userId, pdfToken, lang = 'en' }) {
     check(reportId, String);
     check(userId, String);
     check(pdfToken, String);
+    check(lang, Match.Maybe(String));
 
-    console.log('[RISK_PDF] Fetching report for PDF, reportId:', reportId);
-
-    // Validate PDF token
-    const currentUser = await validatePdfToken(userId, pdfToken);
-    console.log('[RISK_PDF] Token validated for user:', currentUser.emails?.[0]?.address);
-
-    // The token proves identity only. Same rule as the on-screen publication:
-    // see-all roles any report, other staff only the reports they generated.
-    if (!isStaff(currentUser)) {
-      throw new Meteor.Error('not-authorized', 'Insufficient permissions');
+    // See server/helpers/pdfAccessTokens.js — one token per generation, so a
+    // retry cannot invalidate the run that is still rendering.
+    const currentUser = await findUserByPdfAccessToken(userId, pdfToken);
+    if (!currentUser) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
     }
 
-    // Fetch the report
-    const report = await RiskAnalysisReportsCollection.findOneAsync(
-      isSeeAll(currentUser) ? { _id: reportId } : { _id: reportId, generatedBy: currentUser._id }
-    );
-
-    if (!report) {
-      throw new Meteor.Error('not-found', 'Risk analysis report not found');
-    }
-
-    console.log('[RISK_PDF] Found report with', report.analyses?.length || 0, 'analyses');
-    return report;
+    const { buildRiskReport } = await import('../helpers/riskReport/buildRiskReport.js');
+    return buildRiskReport({ currentUser, reportId, lang: lang === 'fr' ? 'fr' : 'en' });
   }
 });
-
-console.log('[RISK_PDF] Risk Analysis PDF methods registered');

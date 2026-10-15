@@ -14,7 +14,7 @@ import {
   applyNotionalSizing,
   summarizeUnderlyings
 } from '/imports/api/underlyingsAnalysis';
-import { resolveScope, allocationsSelector, heldProductIds } from './accessScope.js';
+import { resolveScope, allocationsSelector, holdingsSelector, heldProductIds } from './accessScope.js';
 
 export const LIVE_ANALYSIS_ID = 'phoenix_live_underlyings';
 
@@ -38,14 +38,17 @@ export async function scopeLiveAnalysis(analysis, scope) {
 
 /**
  * The analysis this user may read: live (asOfDate null) or as of a past date.
- * Historical scoped views follow the allocations open at that date.
+ * Historical scoped views follow the positions on record at that date.
  */
 export async function underlyingsAnalysisForUser(user, asOfDate = null) {
   const scope = await resolveScope(user);
   if (asOfDate) {
     if (scope.isAdmin) return buildUnderlyingsAnalysis(asOfDate);
     if (scope.denied) return null;
-    return buildUnderlyingsAnalysis(asOfDate, { allocationsFilter: await allocationsSelector(scope) });
+    return buildUnderlyingsAnalysis(asOfDate, {
+      allocationsFilter: await allocationsSelector(scope),
+      holdingsFilter: await holdingsSelector(scope)
+    });
   }
   const live = await UnderlyingsAnalysisCollection.findOneAsync({ _id: LIVE_ANALYSIS_ID });
   return scopeLiveAnalysis(live, scope);

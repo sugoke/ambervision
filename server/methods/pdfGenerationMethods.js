@@ -72,7 +72,16 @@ async function authorizeReportRequest(user, reportType, reportId, options) {
       }
       return;
     }
-    case 'risk-analysis':
+    case 'risk-analysis': {
+      // Same rule as the on-screen report: see-all roles any report, other
+      // staff the reports they generated (scoped to their own clients).
+      if (isSeeAll(user)) return;
+      if (!isStaff(user)) throw notAuthorized('Insufficient permissions');
+      const { RiskAnalysisReportsCollection } = await import('../../imports/api/riskAnalysis.js');
+      const own = await RiskAnalysisReportsCollection.findOneAsync({ _id: reportId, generatedBy: user._id }, { fields: { _id: 1 } });
+      if (!own) throw notAuthorized('Insufficient permissions');
+      return;
+    }
     case 'underlyings':
       // Firm-wide aggregates (every client's exposure): see-all roles only.
       if (!isSeeAll(user)) throw notAuthorized('Insufficient permissions');
@@ -424,7 +433,7 @@ Meteor.methods({
       // Set viewport
       // The portfolio statement and the product report are designed at
       // 1123×794 px per page (A4 landscape)
-      const isFixedPageReport = reportType === 'pms' || reportType === 'product' || reportType === 'template';
+      const isFixedPageReport = reportType === 'pms' || reportType === 'product' || reportType === 'template' || reportType === 'risk-analysis';
       await page.setViewport(isFixedPageReport
         ? { width: 1123, height: 794, deviceScaleFactor: 2 }
         : { width: 1200, height: 1600, deviceScaleFactor: 2 });

@@ -2,12 +2,10 @@ import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
-import { isProductLiveAsOf } from './underlyingsAnalysis';
+import { liveProducts, clientPositionsByProduct } from './underlyingsAnalysis';
 import { EODApiHelpers } from './eodApi';
 import { ReportsCollection } from './reports';
 import { TemplateReportsCollection } from './templateReports';
-import { ProductsCollection } from './products';
-import { PMSHoldingsCollection } from './pmsHoldings';
 import { ProductPricesCollection } from './productPrices';
 
 /**
@@ -281,37 +279,21 @@ Write the analysis now:`;
   }
 
   /**
-   * Compute the cost baseline per product from PMS holdings (what clients actually
-   * paid), since not all products are issued at par. costPrice is stored in
-   * normalized decimal format (1.0 = 100%); the returned baseline is percent-of-par.
-   * Uses isLatest holdings even in as-of mode: cost price is an acquisition cost and
-   * essentially static, so the latest snapshot is a valid baseline for any date.
-   * @param {Array<string>} productIds
-   * @param {Object|null} holdingsFilter - extra holdings selector (a viewer's scope)
-   * @returns {Promise<Map>} - Map of productId -> baseline in percent-of-par (e.g. 95.71)
+   * Cost baseline per product: what the clients paid (not every product is
+   * issued at par), averaged over their positions weighted by nominal.
+   * costPrice is stored in decimal format (1.0 = 100%); the baseline is
+   * percent-of-par.
+   * @param {Map} positions - productId -> [{ quantity, costPrice }]
+   * @returns {Map} - productId -> baseline in percent-of-par (e.g. 95.71)
    */
-  async function getCostBaselines(productIds, holdingsFilter = null) {
-    if (productIds.length === 0) return new Map();
-
-    const base = { linkedProductId: { $in: productIds }, isLatest: true, isActive: true };
-    const holdings = await PMSHoldingsCollection.find(
-      holdingsFilter ? { $and: [base, holdingsFilter] } : base,
-      { fields: { linkedProductId: 1, costPrice: 1, portfolioCode: 1 } }
-    ).fetchAsync();
-
-    const costsByProduct = new Map();
-    for (const h of holdings) {
-      // Exclude pre-aggregated roll-up copies to avoid double counting
-      if (h.portfolioCode === 'CONSOLIDATED') continue;
-      if (!(h.costPrice > 0)) continue;
-      if (!costsByProduct.has(h.linkedProductId)) costsByProduct.set(h.linkedProductId, []);
-      costsByProduct.get(h.linkedProductId).push(h.costPrice);
-    }
-
+  function costBaselines(positions) {
     const baselines = new Map();
-    for (const [productId, costs] of costsByProduct) {
-      const avgCost = costs.reduce((sum, c) => sum + c, 0) / costs.length;
-      baselines.set(productId, avgCost * 100);
+    for (const [productId, rows] of positions) {
+      const priced = rows.filter(r => r.costPrice > 0 && r.quantity > 0);
+      const nominal = priced.reduce((sum, r) => sum + r.quantity, 0);
+      if (nominal > 0) {
+        baselines.set(productId, priced.reduce((sum, r) => sum + r.costPrice * r.quantity, 0) / nominal * 100);
+      }
     }
     return baselines;
   }
@@ -444,35 +426,16 @@ Write the analysis now:`;
   async function buildProductsDownSinceLaunch({ asOfDate, analysisData, language, commentBySymbol, productScope = null }) {
     const LOSS_THRESHOLD = -15;
 
-    // 1. Live products, all templates
-    let products;
-    if (asOfDate) {
-      const allProducts = await ProductsCollection.find({}).fetchAsync();
-      products = allProducts.filter(p => isProductLiveAsOf(p, asOfDate));
-    } else {
-      products = await ProductsCollection.find({
-        $or: [
-          { status: 'live' },
-          { status: 'Live' },
-          { status: 'active' },
-          { status: 'Active' },
-          { productStatus: 'live' },
-          { productStatus: 'Live' },
-          { productStatus: 'active' },
-          { productStatus: 'Active' }
-        ]
-      }).fetchAsync();
-    }
-
-    // A scoped report covers the viewer's products, at their clients' cost
-    if (productScope) {
-      products = products.filter(p => productScope.productIds.has(String(p._id)));
-    }
+    // 1. Live products, all templates, that clients hold (the viewer's clients
+    //    for a scoped report), with their positions
+    const candidates = await liveProducts(asOfDate);
+    const positions = await clientPositionsByProduct(candidates, productScope?.holdingsFilter || null, asOfDate);
+    const products = candidates.filter(p => positions.has(p._id));
 
     // 2. Latest bank prices + cost baselines
     const isins = [...new Set(products.map(p => p.isin && p.isin.toUpperCase()).filter(Boolean))];
     const priceMap = await getLatestBankPrices(isins, asOfDate);
-    const baselines = await getCostBaselines(products.map(p => p._id), productScope?.holdingsFilter || null);
+    const baselines = costBaselines(positions);
 
     // 3. Flag products down >= 15% vs their cost baseline
     let skippedNoPrice = 0;
@@ -502,7 +465,9 @@ Write the analysis now:`;
           priceDate: priceRecord.priceDate,
           baselineCost,
           baselineSource: baselines.has(product._id) ? 'pms_holdings' : 'default_100',
-          lossPercent
+          lossPercent,
+          clientNominal: positions.get(product._id).reduce((sum, r) => sum + (r.quantity || 0), 0),
+          finalObservation: product.finalObservation || product.finalObservationDate || null
         }
       });
     }
@@ -717,17 +682,14 @@ Write the summary now:`;
       // a report on their own perimeter (products, notionals, cost baselines).
       const { requireRole } = await import('../../server/helpers/sessionAuth.js');
       const { STAFF_ROLES } = await import('../../server/helpers/accessPolicy.js');
-      const { resolveScope, productIdsInScope, holdingsSelector } = await import('../../server/helpers/accessScope.js');
+      const { resolveScope, holdingsSelector } = await import('../../server/helpers/accessScope.js');
       const { underlyingsAnalysisForUser } = await import('../../server/helpers/underlyingsScope.js');
       const user = await requireRole(sessionId, STAFF_ROLES);
       const scope = await resolveScope(user);
       if (scope.denied) {
         throw new Meteor.Error('not-authorized', 'No client perimeter');
       }
-      const productScope = scope.isAdmin ? null : {
-        productIds: await productIdsInScope(scope),
-        holdingsFilter: await holdingsSelector(scope)
-      };
+      const productScope = scope.isAdmin ? null : { holdingsFilter: await holdingsSelector(scope) };
       const scopedToUserId = scope.isAdmin ? null : user._id;
 
       if (asOfDate && asOfDate.getTime() > Date.now()) {
@@ -743,12 +705,14 @@ Write the summary now:`;
         throw new Meteor.Error('no-analysis-data', 'No underlyings analysis found. Please refresh the analysis first.');
       }
 
-      // Filter for underlyings below protection barriers
+      // Filter for underlyings below protection barriers, worst first: a stock
+      // in several products is described by the product where it is furthest
+      // below its barrier
       const atRiskUnderlyings = analysisData.underlyings.filter(u =>
         u.distanceToBarrier != null &&
         u.distanceToBarrier < 0 && // Only include stocks below barrier (negative distance)
         u.hasMarketData
-      );
+      ).sort((a, b) => a.distanceToBarrier - b.distanceToBarrier);
 
       console.log(`[RiskAnalysis] Found ${atRiskUnderlyings.length} at-risk underlyings`);
 
@@ -764,9 +728,14 @@ Write the summary now:`;
           productScope
         });
 
-        const executiveSummary = productsDownSinceLaunch.length > 0
-          ? `All underlyings are currently performing above their protection barriers, indicating no immediate barrier risks to your structured products.\n\nHowever, ${productsDownSinceLaunch.length} product${productsDownSinceLaunch.length > 1 ? 's have' : ' has'} lost 15% or more of value since launch. See the "Products Down 15%+ Since Launch" section below for details on the underlyings driving these losses.`
-          : 'Your portfolio is currently in excellent health. All underlyings are performing above their protection barriers, indicating no immediate risks to your structured products.\n\nThis is a positive indicator that your investment strategy is working well. Continue to monitor your positions regularly for any market changes.';
+        const downCount = productsDownSinceLaunch.length;
+        const executiveSummary = language === 'fr'
+          ? (downCount > 0
+            ? `Aucun sous-jacent des produits détenus par les clients n'est sous sa barrière de protection.\n\nEn revanche, ${downCount} produit${downCount > 1 ? 's ont' : ' a'} perdu 15 % ou plus par rapport au coût des clients : la section « Produits en baisse » détaille les sous-jacents à l'origine de ces pertes.`
+            : `Aucun sous-jacent des produits détenus par les clients n'est sous sa barrière de protection, et aucun produit n'a perdu 15 % ou plus par rapport au coût des clients.`)
+          : (downCount > 0
+            ? `No underlying of the products clients hold is below its protection barrier.\n\nHowever, ${downCount} product${downCount > 1 ? 's have' : ' has'} lost 15% or more on the clients' cost: the "Products down" section details the underlyings behind these losses.`
+            : `No underlying of the products clients hold is below its protection barrier, and no product has lost 15% or more on the clients' cost.`);
 
         const healthReport = {
           generatedAt: new Date(),
@@ -788,7 +757,7 @@ Write the summary now:`;
           executiveSummary,
           impactedProducts: [],
           productsDownSinceLaunch,
-          totalProducts: analysisData.underlyings.length,
+          totalProducts: new Set(analysisData.underlyings.map(u => u.productId)).size,
           generationTime: 0
         };
 
@@ -823,7 +792,10 @@ Write the summary now:`;
               performance: u.performance,
               performanceFormatted: u.performanceFormatted,
               distanceToBarrier: u.distanceToBarrier,
-              daysRemaining: u.daysToFinalObservation
+              barrierLevel: u.protectionBarrierLevel,
+              finalObservation: u.finalObservation || null,
+              daysRemaining: u.daysToFinalObservation,
+              clientNotional: u.productNotional || 0
             }));
 
           uniqueUnderlyings.push({
@@ -859,14 +831,21 @@ Write the summary now:`;
       const allProducts = [];
       const productMap = new Map();
 
+      // The products sit on the grouped underlyings, not on the AI results
+      const productsBySymbol = new Map(uniqueUnderlyings.map(u => [u.symbol, u.products]));
       for (const analysis of analyses) {
-        if (analysis.products) {
-          for (const product of analysis.products) {
+        const analysisProducts = productsBySymbol.get(analysis.symbol);
+        if (analysisProducts) {
+          for (const product of analysisProducts) {
             if (!productMap.has(product.productId)) {
               productMap.set(product.productId, {
                 productId: product.productId,
                 productTitle: product.productTitle,
                 productIsin: product.productIsin,
+                productCurrency: product.productCurrency,
+                barrierLevel: product.barrierLevel,
+                finalObservation: product.finalObservation,
+                clientNotional: product.clientNotional,
                 atRiskUnderlyings: [],
                 worstDistance: product.distanceToBarrier,
                 daysRemaining: product.daysRemaining
@@ -918,8 +897,9 @@ Write the summary now:`;
         executiveSummary,
         impactedProducts: impactedProducts.sort((a, b) => a.worstDistance - b.worstDistance), // Sort by worst distance
         productsDownSinceLaunch,
+        totalProducts: new Set(analysisData.underlyings.map(u => u.productId)).size,
         processingTimeMs: Date.now() - startTime,
-        version: '1.1.0'
+        version: '1.2.0'
       };
 
       // Save to database
