@@ -36,6 +36,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const [refreshError, setRefreshError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [activeTab, setActiveTab] = useState('table'); // 'table' | 'chart'
 
   // As-of historical date ('' = live). Stored as YYYY-MM-DD string from <input type="date">.
   const [asOfDateStr, setAsOfDateStr] = useState('');
@@ -359,15 +360,37 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
 
     const minX = Math.min(...xValues);
     const maxX = Math.max(...xValues);
-    const minY = Math.min(...yValues);
-    const maxY = Math.max(...yValues);
+    // Keep the barrier (0%) and warning (+10%) lines always in view
+    const minY = Math.min(...yValues, 0);
+    const maxY = Math.max(...yValues, 10);
     const maxRadius = Math.max(...radiuses);
 
     // Add padding based on largest bubble radius (convert radius to percentage of axis range)
     const xRange = maxX - minX || 100;
     const yRange = maxY - minY || 100;
-    const xPadding = Math.max(xRange * 0.1, maxRadius * 2); // 10% padding or 2x max bubble radius
-    const yPadding = Math.max(yRange * 0.15, maxRadius * 1.5); // 15% padding or 1.5x max bubble radius
+    const xPadding = Math.max(xRange * 0.05, maxRadius * 2);
+    const yPadding = Math.max(yRange * 0.08, maxRadius * 1.5);
+
+    // Round the bounds to a "nice" step so the edge ticks read 0, 100, +200%… not 60.8 / 205.8119…
+    const niceStep = (range, targetTicks) => {
+      const raw = range / targetTicks;
+      const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+      const normalized = raw / magnitude;
+      const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+      return factor * magnitude;
+    };
+    const xStep = niceStep(xRange + 2 * xPadding, 8);
+    const yStep = niceStep(yRange + 2 * yPadding, 10);
+    const xMinRaw = minX - xPadding;
+    const xMin = minX >= 0 && xMinRaw < 0 ? 0 : Math.floor(xMinRaw / xStep) * xStep;
+    const xMax = Math.ceil((maxX + xPadding) / xStep) * xStep;
+    const yMin = Math.floor((minY - yPadding) / yStep) * yStep;
+    const yMax = Math.ceil((maxY + yPadding) / yStep) * yStep;
+
+    const axisTitleColor = isDarkMode ? '#e5e7eb' : '#374151';
+    const tickColor = isDarkMode ? '#9ca3af' : '#6b7280';
+    const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.07)';
+    const axisBorderColor = isDarkMode ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.25)';
 
     return {
       responsive: true,
@@ -436,14 +459,15 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
               type: 'line',
               yMin: 0,
               yMax: 0,
-              borderColor: 'var(--loss-color)',
+              // Canvas cannot resolve CSS variables, so the colour must be literal
+              borderColor: '#ef4444',
               borderWidth: 2,
               borderDash: [5, 5],
               label: {
                 display: true,
                 content: 'Barrier Threshold',
                 position: 'end',
-                backgroundColor: 'var(--loss-color)',
+                backgroundColor: '#ef4444',
                 color: '#fff',
                 padding: 4,
                 font: {
@@ -477,43 +501,51 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
       },
       scales: {
         x: {
-          min: minX - xPadding,
-          max: maxX + xPadding,
+          min: xMin,
+          max: xMax,
           title: {
             display: true,
             text: 'Days to Final Observation',
-            color: '#ffffff',
-            font: { size: 14, weight: '600' }
+            color: axisTitleColor,
+            font: { size: 13, weight: '600' },
+            padding: { top: 10 }
           },
           border: {
-            color: '#ffffff'
+            color: axisBorderColor
           },
           grid: {
-            color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+            color: gridColor
           },
           ticks: {
-            color: '#ffffff'
+            color: tickColor,
+            stepSize: xStep,
+            font: { size: 12 },
+            callback: (value) => `${Math.round(value)}d`
           }
         },
         y: {
-          min: minY - yPadding,
-          max: maxY + yPadding,
+          min: yMin,
+          max: yMax,
           title: {
             display: true,
             text: 'Distance to Barrier (%)',
-            color: '#ffffff',
-            font: { size: 14, weight: '600' }
+            color: axisTitleColor,
+            font: { size: 13, weight: '600' },
+            padding: { bottom: 10 }
           },
           border: {
-            color: '#ffffff'
+            color: axisBorderColor
           },
           grid: {
-            color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+            color: (ctx) => (ctx.tick && ctx.tick.value === 0 ? 'transparent' : gridColor)
           },
           ticks: {
-            color: '#ffffff',
-            callback: function(value) {
-              return value >= 0 ? `+${value}%` : `${value}%`;
+            color: tickColor,
+            stepSize: yStep,
+            font: { size: 12 },
+            callback: (value) => {
+              const rounded = Math.round(value * 10) / 10;
+              return rounded > 0 ? `+${rounded}%` : `${rounded}%`;
             }
           }
         }
@@ -776,6 +808,69 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         </div>
       </div>
 
+      {/* Tab Navigation */}
+      <div style={{
+        borderBottom: '2px solid var(--border-color)',
+        marginBottom: '1.5rem',
+        display: 'flex',
+        gap: 0,
+        overflowX: 'auto'
+      }}>
+        {[
+          { id: 'table', icon: '📋', label: 'Table', count: totalItems },
+          { id: 'chart', icon: '🫧', label: 'Barrier Risk Chart', count: bubbleChartData.datasets[0].data.length }
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: '12px 24px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '0.95rem',
+              fontWeight: activeTab === tab.id ? '600' : '500',
+              color: activeTab === tab.id ? 'var(--accent-color)' : 'var(--text-secondary)',
+              borderBottom: activeTab === tab.id ? '3px solid var(--accent-color)' : '3px solid transparent',
+              marginBottom: '-2px',
+              backgroundColor: activeTab === tab.id ? 'var(--bg-tertiary)' : 'transparent',
+              borderRadius: '8px 8px 0 0',
+              transition: 'all 0.2s ease',
+              whiteSpace: 'nowrap',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== tab.id) {
+                e.currentTarget.style.color = 'var(--text-primary)';
+                e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== tab.id) {
+                e.currentTarget.style.color = 'var(--text-secondary)';
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }
+            }}
+          >
+            <span>{tab.icon}</span>
+            <span>{tab.label}</span>
+            <span style={{
+              fontSize: '0.75rem',
+              fontWeight: '600',
+              padding: '1px 8px',
+              borderRadius: '999px',
+              background: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-secondary)'
+            }}>
+              {tab.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'table' && (<>
       {/* Search Bar */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1368,14 +1463,27 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         </div>
       </div>
 
+      </>)}
+
       {/* Bubble Chart - Risk Visualization */}
-      {bubbleChartData.datasets[0].data.length > 0 && (
+      {activeTab === 'chart' && bubbleChartData.datasets[0].data.length === 0 && (
         <div style={{
           background: 'var(--bg-secondary)',
           borderRadius: '12px',
           border: '1px solid var(--border-color)',
-          padding: '2rem',
-          marginTop: '2rem'
+          padding: '3rem',
+          textAlign: 'center',
+          color: 'var(--text-secondary)'
+        }}>
+          No underlyings with a barrier and market data to plot
+        </div>
+      )}
+      {activeTab === 'chart' && bubbleChartData.datasets[0].data.length > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-color)',
+          padding: '2rem'
         }}>
           <h2 style={{
             margin: '0 0 1.5rem 0',
@@ -1398,7 +1506,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             <br />
             <span style={{ fontWeight: '600' }}>💡 Click any bubble to view the full product report.</span>
           </p>
-          <div style={{ height: '500px', position: 'relative', cursor: 'pointer' }}>
+          <div style={{ height: '620px', position: 'relative', cursor: 'pointer' }}>
             <Bubble data={bubbleChartData} options={bubbleChartOptions} />
           </div>
         </div>
