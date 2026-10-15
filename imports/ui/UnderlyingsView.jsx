@@ -10,6 +10,8 @@ import { useViewAs } from './ViewAsContext.jsx';
 import { Bubble } from 'react-chartjs-2';
 import RiskReportModal from './components/RiskReportModal.jsx';
 import CustomDateInput from './components/CustomDateInput.jsx';
+import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+import { useIsMobile } from './hooks/useIsMobile.js';
 import {
   Chart as ChartJS,
   LinearScale,
@@ -26,6 +28,7 @@ const asOfStringToDate = (s) => (s ? new Date(`${s}T23:59:59.999`) : null);
 
 const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const { isDarkMode } = useTheme();
+  const isMobile = useIsMobile();
   const { viewAsFilter } = useViewAs();
   // Rebuilding the analysis and the AI risk report are staff actions
   const canRunAnalysis = user?.role !== USER_ROLES.CLIENT;
@@ -567,962 +570,571 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     );
   }
 
+  // Same visual language as the PMS screen: one banded header card, a quiet
+  // tab bar with an amber underline, compact toolbars and a hairline table.
+  const eyebrowStyle = {
+    fontSize: '0.75rem',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    color: 'var(--text-muted)',
+    marginBottom: '0.4rem'
+  };
+
+  const bandStyle = (isFirst = false) => ({
+    padding: isMobile ? '0.875rem 1rem' : '0.875rem 1.25rem',
+    // Keep right-aligned controls clear of the fixed right-hand navigation rail
+    paddingRight: isMobile ? '1rem' : '4.5rem',
+    borderTop: isFirst ? 'none' : '1px solid var(--border-color)',
+    display: 'flex',
+    flexDirection: isMobile ? 'column' : 'row',
+    justifyContent: 'space-between',
+    alignItems: isMobile ? 'stretch' : 'center',
+    gap: isMobile ? '0.875rem' : '1.5rem',
+    flexWrap: 'wrap'
+  });
+
+  const toolbarControlStyle = {
+    padding: '0.5rem 0.75rem',
+    borderRadius: '6px',
+    border: '1px solid var(--border-color)',
+    background: 'var(--bg-secondary)',
+    color: 'var(--text-primary)',
+    fontSize: '0.75rem'
+  };
+
+  const secondaryButtonStyle = (disabled) => ({
+    padding: '0.5rem 0.875rem',
+    background: 'var(--bg-primary)',
+    color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+    border: '1px solid var(--border-color)',
+    borderRadius: '9px',
+    fontSize: '0.8125rem',
+    fontWeight: '600',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    whiteSpace: 'nowrap',
+    width: isMobile ? '100%' : 'auto'
+  });
+
+  const primaryButtonStyle = (disabled) => ({
+    padding: '0.5rem 0.875rem',
+    background: disabled ? 'var(--bg-tertiary)' : 'var(--accent-color)',
+    color: disabled ? 'var(--text-muted)' : 'var(--accent-contrast)',
+    border: `1px solid ${disabled ? 'var(--border-color)' : 'var(--accent-color)'}`,
+    borderRadius: '9px',
+    fontSize: '0.8125rem',
+    fontWeight: '600',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    whiteSpace: 'nowrap',
+    width: isMobile ? '100%' : 'auto'
+  });
+
+  const pageButtonStyle = (disabled, active = false) => ({
+    ...toolbarControlStyle,
+    padding: '0.375rem 0.625rem',
+    background: active ? 'var(--bg-tertiary)' : 'var(--bg-secondary)',
+    color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+    fontWeight: active ? '600' : '400',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1
+  });
+
+  const kpis = [
+    { label: 'Unique underlyings', value: summary.uniqueUnderlyings, color: 'var(--text-primary)' },
+    { label: 'Live barrier products', value: summary.totalProducts, color: 'var(--text-primary)' },
+    { label: 'Positive performance', value: summary.positivePerformance, color: 'var(--gain-color)' },
+    { label: 'Negative performance', value: summary.negativePerformance, color: 'var(--loss-color)' },
+    { label: 'Warning zone', value: summary.warningZone, color: 'var(--warning-color)' },
+    { label: 'Below barrier', value: summary.belowBarrier, color: 'var(--loss-color)' }
+  ];
+
+  const tableColumns = [
+    { key: 'symbol', label: 'Symbol' },
+    { key: 'name', label: 'Name' },
+    { key: 'currentPrice', label: 'Current', align: 'right' },
+    { key: 'initialPrice', label: 'Initial', align: 'right' },
+    { key: 'performance', label: 'Performance', align: 'right' },
+    { key: 'distanceToBarrier', label: 'To barrier', align: 'right', title: 'Distance to lowest protection barrier' },
+    { key: 'daysToFinalObservation', label: 'Days left', align: 'right' },
+    { key: 'productIsin', label: 'Product' }
+  ];
+
+  const viewTabs = [
+    { id: 'table', icon: '📋', label: 'Underlyings', count: totalItems },
+    { id: 'chart', icon: '🫧', label: 'Barrier Risk Chart', count: bubbleChartData.datasets[0].data.length }
+  ];
+
+  const openProductReport = (productId) => {
+    if (!productId) return;
+    if (onNavigateToReport) {
+      onNavigateToReport({ _id: productId });
+    } else {
+      window.location.href = `/report/${productId}`;
+    }
+  };
+
+  const cellStyle = (align = 'left') => ({
+    padding: '0.75rem',
+    fontSize: '0.875rem',
+    textAlign: align,
+    color: 'var(--text-primary)',
+    verticalAlign: 'middle'
+  });
+
   return (
     <div style={{
-      padding: '2rem',
-      background: 'var(--bg-primary)',
-      minHeight: '100vh'
+      maxWidth: '1400px',
+      margin: '0 auto',
+      padding: '2rem 1rem'
     }}>
-      {/* Header */}
+      {/* ── Header card ─────────────────────────────────────────────── */}
       <div style={{
-        background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-        borderRadius: '20px',
-        padding: '2rem',
-        marginBottom: '2rem',
+        marginBottom: '1.5rem',
+        background: 'var(--bg-secondary)',
         border: '1px solid var(--border-color)',
-        boxShadow: '0 10px 30px rgba(0, 0, 0, 0.1)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center'
+        borderRadius: '12px',
+        overflow: 'visible'
       }}>
-        <div>
-          <h1 style={{
-            margin: '0 0 0.5rem 0',
-            fontSize: '2rem',
-            fontWeight: '700',
-            color: 'var(--text-primary)',
-            letterSpacing: '-0.02em'
-          }}>
-            Barrier Products - Underlying Assets
-          </h1>
-          <p style={{
-            margin: 0,
-            fontSize: '1rem',
-            color: 'var(--text-secondary)'
-          }}>
-            {asOfDateStr
-              ? `Historical view of barrier-protected products' underlyings as of ${asOfDateStr}`
-              : 'Track performance of underlying assets in live barrier-protected products (capital-guaranteed excluded)'}
-            {generatedAt && <span> • Generated: {generatedAt}</span>}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            background: 'var(--bg-primary)',
-            padding: '0.5rem 0.75rem',
-            border: '1px solid var(--border-color)',
-            borderRadius: '10px'
-          }}>
-            <label
-              htmlFor="underlyings-asof-date"
-              style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}
-            >
-              As of
-            </label>
-            <CustomDateInput
-              id="underlyings-asof-date"
-              value={asOfDateStr}
-              onChange={(e) => {
-                const v = e.target.value;
-                const today = new Date().toISOString().slice(0, 10);
-                setAsOfDateStr(v && v > today ? today : v);
-              }}
-              placeholder="DD/MM/YYYY"
-              style={{ width: '160px' }}
-              className="underlyings-asof-input"
-            />
-            {asOfDateStr && (
-              <button
-                onClick={() => setAsOfDateStr('')}
-                title="Switch back to live"
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  color: 'var(--text-secondary)',
-                  padding: '0.15rem 0.5rem',
-                  fontSize: '0.75rem',
-                  cursor: 'pointer'
-                }}
-              >
-                Today
-              </button>
-            )}
-          </div>
-          {canRunAnalysis && (<>
-          <button
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '10px',
-              fontSize: '0.95rem',
-              fontWeight: '600',
-              cursor: isRefreshing ? 'not-allowed' : 'pointer',
-              transition: 'all 0.2s',
-              opacity: isRefreshing ? 0.6 : 1
-            }}
-          >
-            {isRefreshing ? 'Refreshing...' : '↻ Refresh Analysis'}
-          </button>
-          <button
-            onClick={handleShowLanguageSelector}
-            disabled={summary.totalProducts === 0}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: (summary.totalProducts === 0)
-                ? 'var(--bg-tertiary)'
-                : 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '10px',
-              fontSize: '0.95rem',
-              fontWeight: '600',
-              cursor: (summary.totalProducts === 0) ? 'not-allowed' : 'pointer',
-              transition: 'all 0.2s',
-              opacity: (summary.totalProducts === 0) ? 0.6 : 1,
+        {/* Band 1: title + as-of date */}
+        <div style={bandStyle(true)}>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{
+              margin: 0,
+              fontFamily: 'var(--font-serif)',
+              fontSize: isMobile ? '1.5rem' : '1.875rem',
+              fontWeight: '500',
+              letterSpacing: '0.2px',
+              color: 'var(--text-primary)',
+              lineHeight: '1.15'
+            }}>
+              Underlyings
+            </h1>
+            <div style={{
+              marginTop: '4px',
+              fontSize: '0.8125rem',
+              color: 'var(--text-muted)',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.5rem'
-            }}
-            title={
-              (summary.totalProducts === 0)
-                ? 'No products available'
-                : 'Generate Amberlake risk analysis report'
-            }
-          >
-            <span>⚠️</span> Generate Risk Report
-          </button>
-          </>)}
+              gap: '7px',
+              flexWrap: 'wrap'
+            }}>
+              <span style={{
+                width: '7px', height: '7px', borderRadius: '50%', flex: 'none',
+                background: asOfDateStr ? 'var(--warning-color)' : 'var(--gain-color)',
+                boxShadow: `0 0 0 3px color-mix(in srgb, ${asOfDateStr ? 'var(--warning-color)' : 'var(--gain-color)'} 18%, transparent)`
+              }} />
+              <span>
+                {asOfDateStr
+                  ? `Barrier-protected products as of ${asOfDateStr}`
+                  : 'Live barrier-protected products · capital-guaranteed excluded'}
+                {generatedAt && ` · Generated ${generatedAt}`}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ minWidth: 0 }}>
+            <div style={{ ...eyebrowStyle, textAlign: isMobile ? 'left' : 'right' }}>
+              <label htmlFor="underlyings-asof-date">As of</label>
+            </div>
+            <div style={{
+              display: 'flex',
+              gap: '0.5rem',
+              alignItems: 'center',
+              justifyContent: isMobile ? 'flex-start' : 'flex-end'
+            }}>
+              <CustomDateInput
+                id="underlyings-asof-date"
+                value={asOfDateStr}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const today = new Date().toISOString().slice(0, 10);
+                  setAsOfDateStr(v && v > today ? today : v);
+                }}
+                placeholder="DD/MM/YYYY"
+                style={{ width: '160px' }}
+                className="underlyings-asof-input"
+              />
+              {asOfDateStr && (
+                <button
+                  onClick={() => setAsOfDateStr('')}
+                  title="Switch back to live"
+                  style={{
+                    padding: '0.5rem 0.75rem',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--warning-color)',
+                    fontSize: '0.8125rem',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  ↻ Live
+                </button>
+              )}
+            </div>
+          </div>
         </div>
+
+        {/* Band 2: key figures */}
+        <div style={{
+          ...bandStyle(),
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(6, minmax(0, 1fr))',
+          gap: isMobile ? '0.875rem' : '1.5rem'
+        }}>
+          {kpis.map(kpi => (
+            <div key={kpi.label} style={{ minWidth: 0 }}>
+              <div style={eyebrowStyle}>{kpi.label}</div>
+              <div className="tnum" style={{
+                fontFamily: 'var(--font-serif)',
+                fontSize: '1.75rem',
+                fontWeight: '500',
+                lineHeight: '1.1',
+                color: kpi.color
+              }}>
+                {kpi.value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Band 3: staff actions */}
+        {canRunAnalysis && (
+          <div style={{ ...bandStyle(), justifyContent: 'flex-end' }}>
+            <div style={{
+              display: isMobile ? 'grid' : 'flex',
+              gridTemplateColumns: isMobile ? '1fr 1fr' : undefined,
+              gap: '0.5rem',
+              alignItems: 'center'
+            }}>
+              <button
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                style={secondaryButtonStyle(isRefreshing)}
+              >
+                {isRefreshing ? 'Refreshing...' : '↻ Refresh analysis'}
+              </button>
+              <button
+                onClick={handleShowLanguageSelector}
+                disabled={summary.totalProducts === 0}
+                style={primaryButtonStyle(summary.totalProducts === 0)}
+                title={summary.totalProducts === 0 ? 'No products available' : 'Generate Amberlake risk analysis report'}
+              >
+                Risk Report ▾
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {refreshError && (
         <div style={{
-          background: '#fef2f2',
-          border: '1px solid #fecaca',
-          borderRadius: '12px',
-          padding: '1rem',
-          marginBottom: '2rem',
-          color: '#991b1b'
+          marginBottom: '1.5rem',
+          padding: '0.75rem 1rem',
+          borderRadius: '9px',
+          border: '1px solid color-mix(in srgb, var(--loss-color) 35%, transparent)',
+          background: 'color-mix(in srgb, var(--loss-color) 10%, transparent)',
+          color: 'var(--loss-color)',
+          fontSize: '0.875rem'
         }}>
           Error: {refreshError}
         </div>
       )}
 
-      {/* Statistics Cards */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-        gap: '1rem',
-        marginBottom: '2rem'
-      }}>
+      {/* ── Tabs ─────────────────────────────────────────────────────── */}
+      <LiquidGlassCard style={{ marginBottom: '2rem' }}>
         <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Unique Underlyings
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-            {summary.uniqueUnderlyings}
-          </div>
-        </div>
-
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Live Barrier Products
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-            {summary.totalProducts}
-          </div>
-        </div>
-
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Positive Performance
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--gain-color)' }}>
-            {summary.positivePerformance}
-          </div>
-        </div>
-
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Negative Performance
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--loss-color)' }}>
-            {summary.negativePerformance}
-          </div>
-        </div>
-
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Warning Zone
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#f97316' }}>
-            {summary.warningZone}
-          </div>
-        </div>
-
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Below Barrier
-          </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--loss-color)' }}>
-            {summary.belowBarrier}
-          </div>
-        </div>
-      </div>
-
-      {/* Tab Navigation */}
-      <div style={{
-        borderBottom: '2px solid var(--border-color)',
-        marginBottom: '1.5rem',
-        display: 'flex',
-        gap: 0,
-        overflowX: 'auto'
-      }}>
-        {[
-          { id: 'table', icon: '📋', label: 'Table', count: totalItems },
-          { id: 'chart', icon: '🫧', label: 'Barrier Risk Chart', count: bubbleChartData.datasets[0].data.length }
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: '12px 24px',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: '0.95rem',
-              fontWeight: activeTab === tab.id ? '600' : '500',
-              color: activeTab === tab.id ? 'var(--accent-color)' : 'var(--text-secondary)',
-              borderBottom: activeTab === tab.id ? '3px solid var(--accent-color)' : '3px solid transparent',
-              marginBottom: '-2px',
-              backgroundColor: activeTab === tab.id ? 'var(--bg-tertiary)' : 'transparent',
-              borderRadius: '8px 8px 0 0',
-              transition: 'all 0.2s ease',
-              whiteSpace: 'nowrap',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-            onMouseEnter={(e) => {
-              if (activeTab !== tab.id) {
-                e.currentTarget.style.color = 'var(--text-primary)';
-                e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (activeTab !== tab.id) {
-                e.currentTarget.style.color = 'var(--text-secondary)';
-                e.currentTarget.style.backgroundColor = 'transparent';
-              }
-            }}
-          >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-            <span style={{
-              fontSize: '0.75rem',
-              fontWeight: '600',
-              padding: '1px 8px',
-              borderRadius: '999px',
-              background: 'var(--bg-primary)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-secondary)'
-            }}>
-              {tab.count}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'table' && (<>
-      {/* Search Bar */}
-      <div style={{
-        background: 'var(--bg-secondary)',
-        borderRadius: '12px',
-        padding: '1rem',
-        marginBottom: '2rem',
-        border: '1px solid var(--border-color)'
-      }}>
-        <div style={{ position: 'relative' }}>
-          <input
-            type="text"
-            placeholder="Search by symbol or name..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.75rem',
-              paddingRight: searchTerm ? '3rem' : '0.75rem',
-              background: 'var(--bg-primary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              color: 'var(--text-primary)',
-              fontSize: '0.95rem',
-              outline: 'none'
-            }}
-          />
-          {searchTerm && (
-            <button
-              onClick={() => setSearchTerm('')}
-              style={{
-                position: 'absolute',
-                right: '0.5rem',
-                top: '50%',
-                transform: 'translateY(-50%)',
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-                fontSize: '1.25rem',
-                padding: '0.25rem 0.5rem',
-                borderRadius: '4px',
-                transition: 'all 0.2s'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--text-primary)';
-                e.currentTarget.style.background = 'var(--bg-tertiary)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--text-secondary)';
-                e.currentTarget.style.background = 'transparent';
-              }}
-              title="Clear search"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-        {searchTerm && (
-          <div style={{
-            marginTop: '0.75rem',
-            fontSize: '0.875rem',
-            color: 'var(--text-secondary)',
-            fontWeight: '500'
-          }}>
-            {filteredAndSortedData.length === 0 ? (
-              <span style={{ color: 'var(--loss-color)' }}>
-                No results found for "{searchTerm}"
-              </span>
-            ) : (
-              <span>
-                Found {filteredAndSortedData.length} result{filteredAndSortedData.length !== 1 ? 's' : ''} for "{searchTerm}"
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Pagination Controls - Top */}
-      {totalItems > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          padding: '1rem 1.5rem',
-          marginBottom: '1rem',
-          border: '1px solid var(--border-color)',
           display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
           flexWrap: 'wrap',
-          gap: '1rem'
+          gap: '0.5rem',
+          padding: '0.75rem',
+          borderBottom: '1px solid var(--border-color)'
         }}>
-          {/* Results info */}
-          <div style={{
-            fontSize: '0.9rem',
-            color: 'var(--text-secondary)',
-            fontWeight: '500'
-          }}>
-            Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems} results
-          </div>
-
-          {/* Items per page selector */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem'
-          }}>
-            <label style={{
-              fontSize: '0.9rem',
-              color: 'var(--text-secondary)',
-              fontWeight: '500'
-            }}>
-              Results per page:
-            </label>
-            <select
-              value={itemsPerPage}
-              onChange={(e) => setItemsPerPage(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+          {viewTabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
               style={{
-                padding: '0.5rem 0.75rem',
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                color: 'var(--text-primary)',
-                fontSize: '0.9rem',
-                fontWeight: '600',
+                padding: '0.7rem 1rem',
+                background: 'transparent',
+                color: activeTab === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
+                border: 'none',
+                borderBottom: activeTab === tab.id ? '2px solid var(--accent-color)' : '2px solid transparent',
+                borderRadius: 0,
                 cursor: 'pointer',
-                outline: 'none'
-              }}
-            >
-              <option value="10">10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="all">All</option>
-            </select>
-          </div>
-
-          {/* Page navigation */}
-          {itemsPerPage !== 'all' && totalPages > 1 && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <button
-                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                disabled={currentPage === 1}
-                style={{
-                  padding: '0.5rem 1rem',
-                  background: currentPage === 1 ? 'var(--bg-tertiary)' : 'var(--accent-color)',
-                  color: currentPage === 1 ? 'var(--text-muted)' : 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  fontSize: '0.85rem',
-                  fontWeight: '600',
-                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.2s'
-                }}
-              >
-                ← Previous
-              </button>
-
-              <div style={{
+                fontWeight: '600',
+                fontSize: '0.85rem',
+                letterSpacing: '0.2px',
+                transition: 'color 0.16s ease, border-color 0.16s ease',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.25rem'
-              }}>
-                {/* Show first page */}
-                {currentPage > 3 && (
-                  <>
-                    <button
-                      onClick={() => setCurrentPage(1)}
-                      style={{
-                        padding: '0.5rem 0.75rem',
-                        background: 'var(--bg-primary)',
-                        color: 'var(--text-primary)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '6px',
-                        fontSize: '0.85rem',
-                        fontWeight: '600',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      1
-                    </button>
-                    <span style={{ color: 'var(--text-muted)', padding: '0 0.25rem' }}>...</span>
-                  </>
-                )}
-
-                {/* Show page numbers around current page */}
-                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  let pageNum;
-                  if (totalPages <= 5) {
-                    pageNum = i + 1;
-                  } else if (currentPage <= 3) {
-                    pageNum = i + 1;
-                  } else if (currentPage >= totalPages - 2) {
-                    pageNum = totalPages - 4 + i;
-                  } else {
-                    pageNum = currentPage - 2 + i;
-                  }
-
-                  if (pageNum < 1 || pageNum > totalPages) return null;
-                  if (currentPage > 3 && pageNum === 1) return null;
-                  if (currentPage < totalPages - 2 && pageNum === totalPages) return null;
-
-                  return (
-                    <button
-                      key={pageNum}
-                      onClick={() => setCurrentPage(pageNum)}
-                      style={{
-                        padding: '0.5rem 0.75rem',
-                        background: currentPage === pageNum ? 'var(--accent-color)' : 'var(--bg-primary)',
-                        color: currentPage === pageNum ? 'white' : 'var(--text-primary)',
-                        border: currentPage === pageNum ? 'none' : '1px solid var(--border-color)',
-                        borderRadius: '6px',
-                        fontSize: '0.85rem',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.2s'
-                      }}
-                    >
-                      {pageNum}
-                    </button>
-                  );
-                })}
-
-                {/* Show last page */}
-                {currentPage < totalPages - 2 && (
-                  <>
-                    <span style={{ color: 'var(--text-muted)', padding: '0 0.25rem' }}>...</span>
-                    <button
-                      onClick={() => setCurrentPage(totalPages)}
-                      style={{
-                        padding: '0.5rem 0.75rem',
-                        background: 'var(--bg-primary)',
-                        color: 'var(--text-primary)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '6px',
-                        fontSize: '0.85rem',
-                        fontWeight: '600',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {totalPages}
-                    </button>
-                  </>
-                )}
-              </div>
-
-              <button
-                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                disabled={currentPage === totalPages}
-                style={{
-                  padding: '0.5rem 1rem',
-                  background: currentPage === totalPages ? 'var(--bg-tertiary)' : 'var(--accent-color)',
-                  color: currentPage === totalPages ? 'var(--text-muted)' : 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  fontSize: '0.85rem',
-                  fontWeight: '600',
-                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.2s'
-                }}
-              >
-                Next →
-              </button>
-            </div>
-          )}
+                gap: '0.4rem',
+                flex: '1 1 auto',
+                minWidth: 'fit-content',
+                justifyContent: 'center'
+              }}
+              onMouseEnter={(e) => { if (activeTab !== tab.id) e.currentTarget.style.color = 'var(--text-primary)'; }}
+              onMouseLeave={(e) => { if (activeTab !== tab.id) e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <span style={{ fontSize: '1.1rem' }}>{tab.icon}</span>
+              <span>{tab.label}</span>
+              <span className="tnum" style={{ fontSize: '0.75rem', fontWeight: '500', color: 'var(--text-muted)' }}>
+                {tab.count}
+              </span>
+            </button>
+          ))}
         </div>
-      )}
 
-      {/* Table - Elegant Design matching Phoenix Report */}
-      <div style={{
-        background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
-        borderRadius: '12px',
-        padding: '1px',
-        boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
-      }}>
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '11px',
-          overflow: 'hidden'
-        }}>
-          {/* Scrollable wrapper for the table */}
-          <div style={{
-            overflowX: 'auto',
-            overflowY: 'hidden',
-            maxWidth: '100%'
-          }}>
-            {/* Table with minimum width to ensure proper display */}
-            <div style={{
-              minWidth: '1200px'
-            }}>
-              {/* Table Header - Sleek Dark Header */}
+        <div style={{ padding: isMobile ? '1rem' : '1.25rem' }}>
+          {activeTab === 'table' && (
+            <>
+              {/* Toolbar */}
               <div style={{
-                display: 'grid',
-                gridTemplateColumns: '0.8fr 1.2fr 0.9fr 0.9fr 0.9fr 1fr 0.9fr 1.5fr',
-                gap: '0.75rem',
-                padding: '1.25rem 1.5rem',
-                background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
-                borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '1rem',
+                flexWrap: 'wrap',
+                gap: '1rem'
               }}>
-                <div
-                  onClick={() => handleSort('symbol')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  🏢 Symbol {sortColumn === 'symbol' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('name')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  📝 Name {sortColumn === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('currentPrice')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'right',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  💵 Current {sortColumn === 'currentPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('initialPrice')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'right',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  📌 Initial {sortColumn === 'initialPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('performance')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'right',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  📈 Performance {sortColumn === 'performance' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('distanceToBarrier')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'right',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                  title="Distance to lowest protection barrier"
-                >
-                  🛡️ Barrier {sortColumn === 'distanceToBarrier' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('daysToFinalObservation')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'right',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  ⏰ Days Left {sortColumn === 'daysToFinalObservation' && (sortDirection === 'asc' ? '↑' : '↓')}
-                </div>
-                <div
-                  onClick={() => handleSort('productIsin')}
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    cursor: 'pointer',
-                    userSelect: 'none'
-                  }}
-                >
-                  📊 Product {sortColumn === 'productIsin' && (sortDirection === 'asc' ? '↑' : '↓')}
+                <h3 style={{ margin: 0, fontSize: '1.125rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                  Underlying Assets
+                </h3>
+
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type="text"
+                      placeholder="Search symbol or name..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      style={{ ...toolbarControlStyle, width: isMobile ? '100%' : '220px', paddingRight: searchTerm ? '1.75rem' : '0.75rem', outline: 'none' }}
+                    />
+                    {searchTerm && (
+                      <button
+                        onClick={() => setSearchTerm('')}
+                        title="Clear search"
+                        style={{
+                          position: 'absolute', right: '0.4rem', top: '50%', transform: 'translateY(-50%)',
+                          background: 'transparent', border: 'none', color: 'var(--text-muted)',
+                          cursor: 'pointer', fontSize: '0.85rem', padding: '0 0.2rem'
+                        }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <select
+                    value={itemsPerPage}
+                    onChange={(e) => setItemsPerPage(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+                    style={{ ...toolbarControlStyle, cursor: 'pointer' }}
+                    title="Rows per page"
+                  >
+                    <option value="10">10 per page</option>
+                    <option value="25">25 per page</option>
+                    <option value="50">50 per page</option>
+                    <option value="100">100 per page</option>
+                    <option value="all">All</option>
+                  </select>
+
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {searchTerm
+                      ? `${totalItems} of ${underlyingsData.length} underlyings`
+                      : `${totalItems} underlyings`}
+                  </span>
                 </div>
               </div>
 
-              {/* Table Rows - Enhanced Visual Hierarchy */}
-              {paginatedData.map((underlying, index) => (
-                <div
-                  key={`${underlying.symbol}-${underlying.productId}`}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '0.8fr 1.2fr 0.9fr 0.9fr 0.9fr 1fr 0.9fr 1.5fr',
-                    gap: '0.75rem',
-                    padding: '1rem 1.5rem',
-                    borderBottom: index < paginatedData.length - 1 ?
-                      '1px solid rgba(148, 163, 184, 0.15)' : 'none',
-                    background: 'transparent',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  {/* Symbol */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    color: 'var(--text-primary)',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                    fontWeight: '700'
-                  }}>
-                    {underlying.symbol}
-                  </div>
+              {/* Table */}
+              <div style={{ overflowX: 'auto', border: '1px solid var(--border-color)', borderRadius: '9px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '980px' }}>
+                  <thead>
+                    <tr>
+                      {tableColumns.map(col => (
+                        <th
+                          key={col.key}
+                          onClick={() => handleSort(col.key)}
+                          title={col.title}
+                          style={{
+                            padding: '0.625rem 0.75rem',
+                            textAlign: col.align || 'left',
+                            fontSize: '0.75rem',
+                            fontWeight: '500',
+                            color: sortColumn === col.key ? 'var(--text-primary)' : 'var(--text-muted)',
+                            background: 'var(--bg-tertiary)',
+                            borderBottom: '1px solid var(--border-color)',
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {col.label}{sortColumn === col.key && (sortDirection === 'asc' ? ' ↑' : ' ↓')}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedData.map((underlying, index) => (
+                      <tr
+                        key={`${underlying.symbol}-${underlying.productId}`}
+                        style={{
+                          borderBottom: index < paginatedData.length - 1 ? '1px solid var(--border-color)' : 'none',
+                          transition: 'background 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <td style={{ ...cellStyle(), fontWeight: '600', whiteSpace: 'nowrap' }}>
+                          {underlying.symbol}
+                        </td>
+                        <td style={cellStyle()}>
+                          {underlying.name}
+                          {underlying.exchange && (
+                            <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              {underlying.exchange}
+                            </span>
+                          )}
+                        </td>
+                        <td className="tnum" style={cellStyle('right')}>
+                          {underlying.currentPriceFormatted || (
+                            <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No data</span>
+                          )}
+                        </td>
+                        <td className="tnum" style={{ ...cellStyle('right'), color: 'var(--text-secondary)' }}>
+                          {underlying.initialPriceFormatted || <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </td>
+                        <td className="tnum" style={{ ...cellStyle('right'), fontWeight: '600', color: underlying.performanceColor || 'var(--text-secondary)' }}>
+                          {underlying.performanceFormatted || <span style={{ color: 'var(--text-muted)', fontWeight: '400' }}>—</span>}
+                        </td>
+                        <td
+                          className="tnum"
+                          style={{ ...cellStyle('right'), fontWeight: '600', color: underlying.distanceToBarrierColor || 'var(--text-secondary)' }}
+                          title={underlying.lowestBarrier != null ? `Barrier at ${underlying.lowestBarrier}%` : ''}
+                        >
+                          {underlying.distanceToBarrierFormatted || <span style={{ color: 'var(--text-muted)', fontWeight: '400' }}>—</span>}
+                        </td>
+                        <td className="tnum" style={{
+                          ...cellStyle('right'),
+                          color: underlying.daysToFinalObservation < 0 ? 'var(--loss-color)' : 'var(--text-secondary)',
+                          fontWeight: underlying.daysToFinalObservation < 0 ? '600' : '400'
+                        }}>
+                          {underlying.daysToFinalObservationFormatted}
+                        </td>
+                        <td style={{ ...cellStyle(), maxWidth: '280px' }}>
+                          <button
+                            type="button"
+                            onClick={() => openProductReport(underlying.productId)}
+                            title="Open the product report"
+                            style={{
+                              display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-start',
+                              background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+                              maxWidth: '100%'
+                            }}
+                          >
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent-color)', fontWeight: '500' }}>
+                              {underlying.productIsin}
+                            </span>
+                            <span style={{
+                              fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.3',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%'
+                            }}>
+                              {underlying.productTitle}
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
 
-                  {/* Name */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    color: 'var(--text-primary)',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                    fontWeight: '600'
-                  }}>
-                    {underlying.name}
-                    {underlying.exchange && (
-                      <span style={{
-                        marginLeft: '0.5rem',
-                        fontSize: '0.7rem',
-                        color: 'var(--text-muted)'
-                      }}>
-                        ({underlying.exchange})
-                      </span>
+                    {totalItems === 0 && (
+                      <tr>
+                        <td colSpan={tableColumns.length} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                          {searchTerm ? `No underlyings match "${searchTerm}"` : 'No underlying assets found'}
+                        </td>
+                      </tr>
                     )}
-                  </div>
+                  </tbody>
+                </table>
+              </div>
 
-                  {/* Current Price */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    textAlign: 'right',
-                    fontWeight: '600',
-                    color: 'var(--text-primary)',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
-                  }}>
-                    {underlying.currentPriceFormatted || (
-                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>No data</span>
-                    )}
-                  </div>
-
-                  {/* Initial Price */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    textAlign: 'right',
-                    color: 'var(--text-secondary)',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                    fontWeight: '600'
-                  }}>
-                    {underlying.initialPriceFormatted || (
-                      <span style={{ fontStyle: 'italic', fontWeight: '400' }}>—</span>
-                    )}
-                  </div>
-
-                  {/* Performance */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    textAlign: 'right',
-                    fontWeight: '700',
-                    color: underlying.performanceColor || 'var(--text-secondary)',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
-                  }}>
-                    {underlying.performanceFormatted || (
-                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>—</span>
-                    )}
-                  </div>
-
-                  {/* Distance to Barrier */}
-                  <div
-                    style={{
-                      fontSize: '0.875rem',
-                      textAlign: 'right',
-                      fontWeight: '700',
-                      color: underlying.distanceToBarrierColor || 'var(--text-secondary)',
-                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
-                    }}
-                    title={underlying.lowestBarrier != null ? `Barrier at ${underlying.lowestBarrier}%` : ''}
-                  >
-                    {underlying.distanceToBarrierFormatted || (
-                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>—</span>
-                    )}
-                  </div>
-
-                  {/* Days to Final Observation */}
-                  <div style={{
-                    fontSize: '0.875rem',
-                    textAlign: 'right',
-                    color: underlying.daysToFinalObservation < 0 ? 'var(--loss-color)' : 'var(--text-secondary)',
-                    fontWeight: underlying.daysToFinalObservation < 0 ? '700' : '600',
-                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
-                  }}>
-                    {underlying.daysToFinalObservationFormatted}
-                  </div>
-
-                  {/* Product ISIN and Title */}
-                  <div
-                    style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', cursor: 'pointer' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (underlying.productId) {
-                        if (onNavigateToReport) {
-                          onNavigateToReport({ _id: underlying.productId });
-                        } else {
-                          window.location.href = `/report/${underlying.productId}`;
-                        }
-                      }
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.opacity = '0.7';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.opacity = '1';
-                    }}
-                    title="Click to view product report"
-                  >
-                    <div style={{
-                      fontSize: '0.75rem',
-                      color: 'var(--accent-color)',
-                      fontWeight: '600',
-                      fontFamily: 'monospace',
-                      textDecoration: 'underline'
-                    }}>
-                      {underlying.productIsin}
-                    </div>
-                    <div style={{
-                      fontSize: '0.7rem',
-                      color: 'var(--text-secondary)',
-                      lineHeight: '1.2',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical'
-                    }}>
-                      {underlying.productTitle}
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {totalItems === 0 && (
+              {/* Pagination */}
+              {itemsPerPage !== 'all' && totalPages > 1 && (
                 <div style={{
-                  padding: '3rem',
-                  textAlign: 'center',
-                  color: 'var(--text-secondary)'
+                  marginTop: '1rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.75rem'
                 }}>
-                  No underlying assets found
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {startIndex + 1}–{Math.min(endIndex, totalItems)} of {totalItems}
+                  </span>
+                  <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+                    <button
+                      onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                      disabled={currentPage === 1}
+                      style={pageButtonStyle(currentPage === 1)}
+                    >
+                      ← Previous
+                    </button>
+                    {Array.from({ length: totalPages }, (_, i) => i + 1)
+                      .filter(p => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
+                      .map((p, i, arr) => (
+                        <React.Fragment key={p}>
+                          {i > 0 && p - arr[i - 1] > 1 && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>…</span>
+                          )}
+                          <button
+                            onClick={() => setCurrentPage(p)}
+                            style={pageButtonStyle(false, p === currentPage)}
+                          >
+                            {p}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                    <button
+                      onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                      disabled={currentPage === totalPages}
+                      style={pageButtonStyle(currentPage === totalPages)}
+                    >
+                      Next →
+                    </button>
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      </div>
+            </>
+          )}
 
-      </>)}
-
-      {/* Bubble Chart - Risk Visualization */}
-      {activeTab === 'chart' && bubbleChartData.datasets[0].data.length === 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          padding: '3rem',
-          textAlign: 'center',
-          color: 'var(--text-secondary)'
-        }}>
-          No underlyings with a barrier and market data to plot
+          {activeTab === 'chart' && (
+            bubbleChartData.datasets[0].data.length === 0 ? (
+              <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                No underlyings with a barrier and market data to plot
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: '1rem' }}>
+                  <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.125rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                    Barrier Risk
+                  </h3>
+                  <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                    One bubble per product and underlying, sized by the amount invested.{' '}
+                    <span style={{ color: 'var(--gain-color)', fontWeight: '600' }}>Green</span> more than 10% above the barrier,{' '}
+                    <span style={{ color: 'var(--warning-color)', fontWeight: '600' }}>orange</span> within 10%,{' '}
+                    <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}>red</span> below it (capital at risk).
+                    {' '}Click a bubble to open the product report.
+                  </div>
+                </div>
+                <div style={{ height: isMobile ? '420px' : '620px', position: 'relative', cursor: 'pointer' }}>
+                  <Bubble data={bubbleChartData} options={bubbleChartOptions} />
+                </div>
+              </>
+            )
+          )}
         </div>
-      )}
-      {activeTab === 'chart' && bubbleChartData.datasets[0].data.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          padding: '2rem'
-        }}>
-          <h2 style={{
-            margin: '0 0 1.5rem 0',
-            fontSize: '1.5rem',
-            fontWeight: '700',
-            color: 'var(--text-primary)'
-          }}>
-            Barrier Risk Visualization
-          </h2>
-          <p style={{
-            margin: '0 0 1.5rem 0',
-            fontSize: '0.95rem',
-            color: 'var(--text-secondary)'
-          }}>
-            Each bubble represents one product-underlying combination. Bubble size is proportional to the investment amount.
-            <br />
-            <span style={{ color: 'var(--gain-color)', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
-            <span style={{ color: '#f97316', fontWeight: '600' }}> Orange</span> = warning zone (0-10% above barrier),
-            <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).
-            <br />
-            <span style={{ fontWeight: '600' }}>💡 Click any bubble to view the full product report.</span>
-          </p>
-          <div style={{ height: '620px', position: 'relative', cursor: 'pointer' }}>
-            <Bubble data={bubbleChartData} options={bubbleChartOptions} />
-          </div>
-        </div>
-      )}
-
-      {/* Last Update */}
-      {generatedAt && (
-        <div style={{
-          marginTop: '1rem',
-          textAlign: 'center',
-          fontSize: '0.875rem',
-          color: 'var(--text-secondary)'
-        }}>
-          Analysis generated: {generatedAt}
-        </div>
-      )}
+      </LiquidGlassCard>
 
       {/* Language Selector Modal */}
       {showLanguageSelector && (
