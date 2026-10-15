@@ -4,6 +4,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
+import { dropCarriedForward, endOfDay } from '../helpers/holdingsAsOf.js';
 import { parseViewAs } from '/imports/utils/viewAs';
 import { getSessionUser } from '../helpers/sessionAuth.js';
 import { resolveScope, holdingsSelector } from '../helpers/accessScope.js';
@@ -59,7 +60,10 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, rawViewAs = null
             top: {
               $top: {
                 sortBy: { snapshotDate: -1, version: -1 },
-                output: { holdingId: '$_id' }
+                output: {
+                  _id: '$_id', uniqueKey: '$uniqueKey', bankId: '$bankId', portfolioCode: '$portfolioCode',
+                  snapshotDate: '$snapshotDate', clientCode: '$clientCode', entityId: '$entityId', userId: '$userId'
+                }
               }
             }
           }
@@ -68,7 +72,11 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, rawViewAs = null
       const latestByKey = await PMSHoldingsCollection.rawCollection()
         .aggregate(pipeline, { allowDiskUse: true })
         .toArray();
-      const holdingIds = latestByKey.map(doc => doc.top.holdingId);
+      // Sold and legacy-key positions are not carried past their last file
+      const onRecord = await dropCarriedForward(
+        latestByKey.map(doc => doc.top), endOfDay(parsedAsOfDate), { $and: base }
+      );
+      const holdingIds = onRecord.map(h => h._id);
       return PMSHoldingsCollection.find({ _id: { $in: holdingIds } }, { sort: { securityName: 1 } });
     }
 

@@ -20,6 +20,7 @@
 import { Meteor } from 'meteor/meteor';
 import { OPERATION_TYPES, OPERATION_CATEGORIES } from '/imports/api/constants/operationTypes';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
+import { dropCarriedForward, endOfDay } from '../holdingsAsOf.js';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isInvestmentAccount, getClientReferenceCurrency } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
@@ -149,7 +150,7 @@ const holdingsAsOf = async (selector, asOf) => {
     { $match: { $and: [selector, { isActive: true }, { snapshotDate: { $lt: new Date(dayStart(asOf).getTime() + DAY) } }] } },
     { $group: { _id: '$uniqueKey', top: { $top: { sortBy: { snapshotDate: -1, version: -1 }, output: '$$ROOT' } } } }
   ], { allowDiskUse: true }).toArray();
-  return latestByKey.map(d => d.top);
+  return dropCarriedForward(latestByKey.map(d => d.top), endOfDay(asOf), selector);
 };
 
 /**
