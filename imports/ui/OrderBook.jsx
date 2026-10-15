@@ -9,7 +9,7 @@ import ValidationBlotter from './components/ValidationBlotter.jsx';
 import LiveOrdersBlotter from './components/LiveOrdersBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import * as XLSX from 'xlsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TICKET_KINDS, VALIDITY_TYPES, isModifiableOrder, MULTI_INSTANCE_TRACE_TYPES } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TICKET_KINDS, VALIDITY_TYPES, isModifiableOrder, MULTI_INSTANCE_TRACE_TYPES, MULTI_FILE_TRACE_TYPES } from '/imports/api/orders';
 
 // Trace type the order's pending amendment / cancellation notice is filed under
 const pendingNoticeTraceType = (order) => {
@@ -1251,7 +1251,13 @@ const OrderBook = ({ user }) => {
 
     // Method 1: Check dataTransfer.files (standard file drops from file explorer)
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleTraceFile(e.dataTransfer.files[0], traceType, orderId);
+      // Several client emails can be dropped at once onto a multi-file tile
+      const files = MULTI_FILE_TRACE_TYPES.has(traceType)
+        ? [...e.dataTransfer.files]
+        : [e.dataTransfer.files[0]];
+      for (const file of files) {
+        await handleTraceFile(file, traceType, orderId);
+      }
       return;
     }
 
@@ -3393,6 +3399,69 @@ const OrderBook = ({ user }) => {
                       : traces.find(t => t.traceType === traceType);
                   const isUploading = uploadingTrace === traceType;
                   const isPhoneMode = !isTermsheetTile && !!tracePhoneForms[traceType];
+                  // Client order: every email the client sent is kept and listed on the tile
+                  const multiFileTraces = MULTI_FILE_TRACE_TYPES.has(traceType)
+                    ? traces.filter(t => t.traceType === traceType)
+                    : null;
+                  const smallBtn = (color, filled) => ({
+                    padding: isMobile ? '8px 14px' : '3px 8px', fontSize: isMobile ? '13px' : '10px',
+                    border: `1px solid ${color}`, borderRadius: '4px',
+                    background: filled ? 'var(--bg-secondary)' : 'transparent', color, cursor: 'pointer'
+                  });
+                  const openPhoneForm = () => {
+                    const now = new Date();
+                    const pad = (n) => String(n).padStart(2, '0');
+                    const defaultTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+                    setTracePhoneForms(prev => ({
+                      ...prev, [traceType]: prev[traceType] || { callTime: defaultTime, caller: '', callee: '', notes: '' }
+                    }));
+                  };
+                  const handlePickedFiles = async (fileList) => {
+                    const files = multiFileTraces ? [...fileList] : [fileList[0]];
+                    for (const file of files) {
+                      await handleTraceFile(file, traceType, selectedOrder.order._id);
+                    }
+                  };
+                  const renderPhoneForm = () => (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Call Time</label>
+                        <input type="datetime-local" value={tracePhoneForms[traceType]?.callTime || ''}
+                          onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callTime: val}})); }}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Caller</label>
+                        <input placeholder="Who called" value={tracePhoneForms[traceType]?.caller || ''}
+                          onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], caller: val}})); }}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Callee</label>
+                        <input placeholder="Who was called" value={tracePhoneForms[traceType]?.callee || ''}
+                          onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callee: val}})); }}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Notes</label>
+                        <input placeholder="Optional notes" value={tracePhoneForms[traceType]?.notes || ''}
+                          onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], notes: val}})); }}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                      </div>
+                      <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                        <button
+                          onClick={() => handleSavePhoneTrace(traceType, selectedOrder.order._id)}
+                          style={{ flex: 1, padding: '5px', fontSize: '11px', fontWeight: '600', background: 'var(--gain-color)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                        >Save</button>
+                        {multiFileTraces && multiFileTraces.length > 0 && (
+                          <button
+                            onClick={() => setTracePhoneForms(prev => { const n = {...prev}; delete n[traceType]; return n; })}
+                            style={{ padding: '5px 10px', fontSize: '11px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', cursor: 'pointer' }}
+                          >Cancel</button>
+                        )}
+                      </div>
+                    </div>
+                  );
 
                   return (
                     <div
@@ -3449,6 +3518,91 @@ const OrderBook = ({ user }) => {
 
                       {isUploading ? (
                         <div style={{ fontSize: '12px', color: '#0ea5e9' }}>Saving...</div>
+                      ) : multiFileTraces && multiFileTraces.length > 0 ? (
+                        /* Multi-file tile: every client email on file, plus room for one more */
+                        <div>
+                          <div style={{ fontSize: '18px', marginBottom: '6px', color: 'var(--gain-color)' }}>
+                            &#10003;{multiFileTraces.length > 1 && <span style={{ fontSize: '11px', fontWeight: '600', marginLeft: '6px' }}>{multiFileTraces.length} on file</span>}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                            {multiFileTraces.map(t => (
+                              <div key={t._id} style={{ padding: '6px', borderRadius: '6px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+                                {t.traceMode === 'phone' ? (
+                                  <>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '2px' }}>
+                                      &#9742; {t.phoneCaller} &rarr; {t.phoneCallee}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                      {new Date(t.phoneCallTime).toLocaleString()}
+                                    </div>
+                                    {t.phoneNotes && (
+                                      <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', fontStyle: 'italic' }}>{t.phoneNotes}</div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-primary)', wordBreak: 'break-all', marginBottom: '2px' }}>{t.fileName}</div>
+                                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                      {new Date(t.uploadedAt).toLocaleDateString()}
+                                    </div>
+                                  </>
+                                )}
+                                <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                                  {t.traceMode !== 'phone' && (
+                                    <button
+                                      style={smallBtn('var(--text-secondary)', true)}
+                                      onClick={(e) => { e.stopPropagation(); handleDownloadTrace(selectedOrder.order._id, t._id, t.fileName); }}
+                                    >
+                                      Download
+                                    </button>
+                                  )}
+                                  <button
+                                    style={smallBtn('var(--loss-color)', false)}
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, t._id); }}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {isPhoneMode ? renderPhoneForm() : !isTerminal && (
+                            <div>
+                              <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                {isMobile ? 'Add another client email' : 'Drop another client email here, or'}
+                              </div>
+                              <div style={{ display: 'flex', gap: '4px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                                <label style={{ ...smallBtn('#0ea5e9', false), background: 'rgba(14, 165, 233, 0.1)', display: 'inline-block' }}>
+                                  + Browse
+                                  <input
+                                    type="file"
+                                    multiple
+                                    accept=".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"
+                                    style={{ display: 'none' }}
+                                    onChange={(e) => {
+                                      if (e.target.files && e.target.files.length > 0) {
+                                        handlePickedFiles(e.target.files);
+                                        e.target.value = '';
+                                      }
+                                    }}
+                                  />
+                                </label>
+                                {graphConnection.connected && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setMailPicker({ orderId: selectedOrder.order._id, traceType })}
+                                    style={smallBtn('var(--text-secondary)', false)}
+                                  >
+                                    + Outlook
+                                  </button>
+                                )}
+                                <button type="button" onClick={openPhoneForm} style={smallBtn('var(--text-secondary)', false)}>
+                                  + Phone
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       ) : trace ? (
                         trace.traceMode === 'phone' ? (
                           /* Phone trace completed */
@@ -3519,14 +3673,7 @@ const OrderBook = ({ user }) => {
                               }}
                             >File</button>
                             <button
-                              onClick={() => {
-                                const now = new Date();
-                                const pad = (n) => String(n).padStart(2, '0');
-                                const defaultTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-                                setTracePhoneForms(prev => ({
-                                  ...prev, [traceType]: prev[traceType] || { callTime: defaultTime, caller: '', callee: '', notes: '' }
-                                }));
-                              }}
+                              onClick={openPhoneForm}
                               style={{
                                 padding: '2px 10px', fontSize: '10px', borderRadius: '4px', border: 'none', cursor: 'pointer',
                                 background: isPhoneMode ? '#0ea5e9' : 'var(--bg-secondary)',
@@ -3536,38 +3683,7 @@ const OrderBook = ({ user }) => {
                           </div>
                           )}
 
-                          {isPhoneMode ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
-                              <div>
-                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Call Time</label>
-                                <input type="datetime-local" value={tracePhoneForms[traceType]?.callTime || ''}
-                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callTime: val}})); }}
-                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
-                              </div>
-                              <div>
-                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Caller</label>
-                                <input placeholder="Who called" value={tracePhoneForms[traceType]?.caller || ''}
-                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], caller: val}})); }}
-                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
-                              </div>
-                              <div>
-                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Callee</label>
-                                <input placeholder="Who was called" value={tracePhoneForms[traceType]?.callee || ''}
-                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callee: val}})); }}
-                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
-                              </div>
-                              <div>
-                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Notes</label>
-                                <input placeholder="Optional notes" value={tracePhoneForms[traceType]?.notes || ''}
-                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], notes: val}})); }}
-                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
-                              </div>
-                              <button
-                                onClick={() => handleSavePhoneTrace(traceType, selectedOrder.order._id)}
-                                style={{ marginTop: '4px', padding: '5px', fontSize: '11px', fontWeight: '600', background: 'var(--gain-color)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-                              >Save</button>
-                            </div>
-                          ) : (
+                          {isPhoneMode ? renderPhoneForm() : (
                             <div>
                               <div style={{ fontSize: '22px', marginBottom: '4px', opacity: 0.3 }}>&#128233;</div>
                               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
@@ -3587,12 +3703,13 @@ const OrderBook = ({ user }) => {
                                     type="file"
                                     accept={isTermsheetTile ? TERMSHEET_EVIDENCE_TYPES.join(',') : ".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"}
                                     style={{ display: 'none' }}
+                                    multiple={Boolean(multiFileTraces)}
                                     onChange={(e) => {
                                       if (e.target.files && e.target.files.length > 0) {
                                         if (isTermsheetTile) {
                                           handleSignedTermsheetUpload(e.target.files[0], selectedOrder.order._id);
                                         } else {
-                                          handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                                          handlePickedFiles(e.target.files);
                                         }
                                         e.target.value = '';
                                       }

@@ -19,7 +19,7 @@ import { BankAccountsCollection, getAuthorizedEmails, accountAllowsOrders } from
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY, TICKET_KINDS, AT_BANK_ORDER_STATUSES, MULTI_INSTANCE_TRACE_TYPES, VALIDITY_TYPES, isModifiableOrder, remainingOrderQuantity } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY, TICKET_KINDS, AT_BANK_ORDER_STATUSES, MULTI_INSTANCE_TRACE_TYPES, traceTypeAccumulates, VALIDITY_TYPES, isModifiableOrder, remainingOrderQuantity } from '../../imports/api/orders.js';
 import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
@@ -1253,7 +1253,7 @@ Meteor.methods({
     // creation would therefore silently drop evidence — refuse instead.
     const seenTraceTypes = new Set();
     for (const attachment of (attachments || [])) {
-      if (seenTraceTypes.has(attachment.traceType)) {
+      if (seenTraceTypes.has(attachment.traceType) && !traceTypeAccumulates(attachment.traceType)) {
         throw new Meteor.Error(
           'duplicate-attachment-type',
           `Only one ${EMAIL_TRACE_LABELS[attachment.traceType] || attachment.traceType} file can be attached at creation`
@@ -1274,7 +1274,7 @@ Meteor.methods({
         });
         // One trace per type: mirror writeTraceFileToOrder's replace semantics locally
         targetOrder.emailTraces = targetOrder.emailTraces
-          .filter(t => t.traceType !== attachment.traceType)
+          .filter(t => traceTypeAccumulates(attachment.traceType) || t.traceType !== attachment.traceType)
           .concat(trace);
       }
     };
@@ -4879,7 +4879,7 @@ const writeTraceFileToOrder = async ({
   // Remove existing trace of same type (file from disk + entry from DB) if it exists.
   // Amendment / cancellation notices accumulate instead: each one is evidence.
   const existingTraces = order.emailTraces || [];
-  const existingTrace = MULTI_INSTANCE_TRACE_TYPES.has(traceType)
+  const existingTrace = traceTypeAccumulates(traceType)
     ? null
     : existingTraces.find(t => t.traceType === traceType);
   if (existingTrace) {
@@ -5858,7 +5858,7 @@ Meteor.methods({
     // Remove existing trace of same type if exists (amendment / cancellation
     // notices accumulate instead — each one is evidence)
     const existingTraces = order.emailTraces || [];
-    const existingTrace = MULTI_INSTANCE_TRACE_TYPES.has(traceType)
+    const existingTrace = traceTypeAccumulates(traceType)
       ? null
       : existingTraces.find(t => t.traceType === traceType);
     if (existingTrace) {

@@ -220,6 +220,16 @@ export const MULTI_INSTANCE_TRACE_TYPES = new Set([
   EMAIL_TRACE_TYPES.CANCELLATION_TO_BANK
 ]);
 
+// A client's instruction can span several emails (order, then a follow-up
+// confirming size or limit), so every one of them is kept on the same tile.
+export const MULTI_FILE_TRACE_TYPES = new Set([
+  EMAIL_TRACE_TYPES.CLIENT_ORDER
+]);
+
+// Trace types where a new upload is added next to the existing ones instead of replacing them
+export const traceTypeAccumulates = (traceType) =>
+  MULTI_INSTANCE_TRACE_TYPES.has(traceType) || MULTI_FILE_TRACE_TYPES.has(traceType);
+
 // Trace type labels for display
 export const EMAIL_TRACE_LABELS = {
   [EMAIL_TRACE_TYPES.CLIENT_ORDER]: 'Client Order',
