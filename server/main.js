@@ -85,6 +85,7 @@ import { NotificationsCollection, NotificationHelpers } from '/imports/api/notif
 import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
 import { NewslettersCollection } from '/imports/api/newsletters';
 import { initializeCronJobs } from './cron/jobs';
+import { startTermSheetAuditPoller } from './helpers/termSheetAudit/run.js';
 import { updateMarketTickerPrices, isDataStale } from './cron/updateMarketTicker';
 // Schedule is now included in reports, no separate collection needed
 import { EquityHoldingsCollection, EquityHoldingsHelpers } from '/imports/api/equityHoldings';
@@ -513,6 +514,9 @@ Meteor.startup(async () => {
   } catch (error) {
     console.error('❌ Error initializing cron jobs:', error);
   }
+
+  // Term sheet audit: runs when a job is requested in termSheetAuditJobs
+  startTermSheetAuditPoller();
 
   // First-user trigger: Update market ticker prices when user connects after idle period
   Meteor.onConnection((connection) => {

@@ -30,3 +30,4 @@ if (Meteor.isServer) {
   }
   require("./access/index.js");
 }
+import "./termSheetAudit.test.js";
