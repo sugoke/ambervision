@@ -25,9 +25,12 @@ export const OrionEvaluationHelpers = {
    * @param {number} strike - split-adjusted strike (same units as history)
    * @param {Date} tradeDate
    * @param {string} fullTicker - for the splits lookup and logging
+   * @param {string} [isin] - the underlying's ISIN; when the feed ticker is a listing
+   *   of it, the series is proven to be this instrument even if the strike sits far
+   *   from the close (a term sheet may fix an "agreed" off-market initial price)
    * @returns {Promise<{ok: boolean, basis: number, reason: string}>}
    */
-  async validateSeriesBasis(history, strike, tradeDate, fullTicker) {
+  async validateSeriesBasis(history, strike, tradeDate, fullTicker, isin = null) {
     if (!strike || strike <= 0 || !Array.isArray(history) || history.length === 0) {
       return { ok: true, basis: strike, reason: 'not-validatable' };
     }
@@ -61,7 +64,18 @@ export const OrionEvaluationHelpers = {
       // Failed lookup must not silently bless the gap — fall through to reject.
     }
 
-    console.error(`[ORION] ${fullTicker}: series close ${anchorClose} near ${tradeDateStr} is inconsistent with strike ${strike} (x${(1 / ratio).toFixed(2)}) and no split explains it — this feed is NOT this underlying's instrument. Ignoring the series.`);
+    // The ISIN is the only fact that tells an agreed off-market initial price apart
+    // from a wrong feed: a ticker listed under the underlying's ISIN is this instrument.
+    try {
+      if (await EODApiHelpers.tickerMatchesIsin(fullTicker, isin) === true) {
+        console.log(`[ORION] ${fullTicker}: strike ${strike} sits x${(1 / ratio).toFixed(2)} from close ${anchorClose} near ${tradeDateStr}, but the feed is listed under ISIN ${isin} — agreed off-market initial price, measuring against the strike`);
+        return { ok: true, basis: strike, reason: 'isin-confirmed' };
+      }
+    } catch (e) {
+      // Unknown is not a match — fall through to reject.
+    }
+
+    console.error(`[ORION] ${fullTicker}: series close ${anchorClose} near ${tradeDateStr} is inconsistent with strike ${strike} (x${(1 / ratio).toFixed(2)}), no split explains it and the ISIN does not vouch for the feed — this feed is NOT this underlying's instrument. Ignoring the series.`);
     return { ok: false, basis: strike, reason: 'wrong-instrument' };
   },
 
@@ -296,7 +310,7 @@ export const OrionEvaluationHelpers = {
 
       // A barrier verdict from the wrong instrument is worse than no verdict:
       // verify the series belongs to this strike before scanning it.
-      const seriesCheck = await this.validateSeriesBasis(relevantHistory, initialPrice, tradeDate, cacheDoc.fullTicker || fullTicker);
+      const seriesCheck = await this.validateSeriesBasis(relevantHistory, initialPrice, tradeDate, cacheDoc.fullTicker || fullTicker, underlying.isin);
       if (!seriesCheck.ok) {
         console.error(`[ORION BARRIER CHECK] ❌ ${fullTicker}: price series rejected (${seriesCheck.reason}) — cannot determine barrier touches from a mismatched feed`);
         return false;
@@ -459,7 +473,7 @@ export const OrionEvaluationHelpers = {
               usedCacheDoc.history, initialPrice, usedTicker
             );
             const seriesCheck = await this.validateSeriesBasis(
-              normalizedHistory, initialPrice, tradeDateForCheck, usedTicker
+              normalizedHistory, initialPrice, tradeDateForCheck, usedTicker, underlying.isin
             );
             if (!seriesCheck.ok) {
               feedMismatch = true;
