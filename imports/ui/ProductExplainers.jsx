@@ -6,12 +6,56 @@ import { PRODUCT_EXPLAINERS } from '/imports/constants/productExplainers.js';
 // Gallery of interactive client-facing product explainers. Clicking one opens it
 // full screen over the app (browser full screen where supported, a fixed overlay
 // otherwise, e.g. iPhone) with a close button on the slide to return to the Intranet.
+// The decks are static files under /public, served without a session, so their
+// absolute URL is a public link a prospect can open and play with.
+const publicLink = (explainer) =>
+  (typeof window !== 'undefined' ? window.location.origin : '') + explainer.file;
+
+// Clipboard API needs a secure context and, on iOS, a user gesture; fall back to
+// a selected hidden textarea so the copy still works where it is unavailable.
+const copyText = async (text) => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) { /* fall through to the textarea fallback */ }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch (err) {
+    return false;
+  }
+};
+
 const ProductExplainers = ({ isDark }) => {
   const [search, setSearch] = useState('');
   const [activeId, setActiveId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+  const [copyFailedId, setCopyFailedId] = useState(null);
+  const copiedTimer = useRef(null);
   const enteredFullscreen = useRef(false);
 
   const active = PRODUCT_EXPLAINERS.find(e => e.id === activeId);
+
+  const copyPublicLink = async (e, explainer) => {
+    e.stopPropagation();
+    const ok = await copyText(publicLink(explainer));
+    setCopiedId(ok ? explainer.id : null);
+    setCopyFailedId(ok ? null : explainer.id);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => { setCopiedId(null); setCopyFailedId(null); }, 2500);
+  };
+
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
 
   const openExplainer = (id) => {
     setActiveId(id);
@@ -153,9 +197,16 @@ const ProductExplainers = ({ isDark }) => {
         gap: '1.5rem'
       }}>
         {filtered.map(explainer => (
-          <button
+          // A div, not a <button>: the card holds its own "copy link" button and
+          // nested buttons are invalid HTML (browsers break the inner one out).
+          <div
             key={explainer.id}
+            role="button"
+            tabIndex={0}
             onClick={() => openExplainer(explainer.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openExplainer(explainer.id); }
+            }}
             style={{
               textAlign: 'left',
               padding: 0,
@@ -222,14 +273,57 @@ const ProductExplainers = ({ isDark }) => {
               </p>
               <div style={{
                 marginTop: '0.75rem',
-                fontSize: '0.8rem',
-                fontWeight: '600',
-                color: 'var(--text-secondary)'
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                flexWrap: 'wrap'
               }}>
-                Language: {explainer.language}
+                <div style={{
+                  fontSize: '0.8rem',
+                  fontWeight: '600',
+                  color: 'var(--text-secondary)'
+                }}>
+                  Language: {explainer.language}
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => copyPublicLink(e, explainer)}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  title={publicLink(explainer)}
+                  aria-label={`Copy public link to ${explainer.title}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '0.4rem 0.75rem',
+                    fontSize: '0.8rem',
+                    fontWeight: '600',
+                    font: 'inherit',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    border: `1px solid ${copiedId === explainer.id ? '#059669' : copyFailedId === explainer.id ? '#d97706' : 'var(--border-color)'}`,
+                    background: copiedId === explainer.id ? 'rgba(5, 150, 105, 0.12)' : (isDark ? 'var(--bg-tertiary)' : '#f9fafb'),
+                    color: copiedId === explainer.id ? '#059669' : copyFailedId === explainer.id ? '#d97706' : 'var(--text-secondary)',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  {copiedId === explainer.id ? '✓ Link copied' : copyFailedId === explainer.id ? 'Copy failed' : '🔗 Copy public link'}
+                </button>
+              </div>
+              <div style={{
+                marginTop: '0.5rem',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}>
+                {publicLink(explainer)}
               </div>
             </div>
-          </button>
+          </div>
         ))}
       </div>
 
