@@ -20,12 +20,23 @@
  *     └ <userId>/                                                    client documents
  *     └ orders/<orderId>/                                            order email traces
  *     └ entities/<entityId>/                                         entity documents
+ *     └ sizeable/<reviewId>/                                         sizeable-transaction evidence
+ *     └ gdpr_exports/                                                GDPR Art. 15/20 export copies
  *     └ meetingReports/    (or MEETING_REPORTS_PATH)                 meeting report PDFs
  *     └ research/          (or RESEARCH_PATH)                         internal research PDFs
  *     └ newsletters/       (or NEWSLETTERS_PATH)                      Market News newsletters
  *
  * Every file-writing feature takes its directory from here; nothing else
  * builds a storage path from process.cwd() or an env var of its own.
+ *
+ * Records in MongoDB may carry a `filePath` written at upload time. It is
+ * informational only: every read and delete resolves the file again from the
+ * store root and the stored filename (resolveClientDocumentPath & co. below),
+ * so files survive a change of mount point and records written before the
+ * public/ → private migration still resolve.
+ *
+ * Outside the volume, on purpose: PDF_EXPORTS_PATH (or the OS temp dir) holds
+ * generated PDF exports for 30 minutes (server/pdfExportStore.js).
  *
  * Nothing lives under public/ — Meteor serves that tree unauthenticated. Every
  * read goes through a WebApp handler gated on a capability token
@@ -37,6 +48,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 /**
@@ -89,10 +101,15 @@ export function describeStorageRoots() {
   const roots = {
     termsheets: getTermsheetsDir,
     fichierCentral: getFichierCentralDir,
+    orderTraces: getOrderTracesDir,
+    entityDocuments: getEntityDocumentsDir,
+    sizeableEvidence: getSizeableEvidenceDir,
+    gdprExports: getGdprExportsDir,
     bankfiles: getBankfilesDir,
     newsletters: getNewslettersDir,
     meetingReports: getMeetingReportsDir,
-    research: getResearchDir
+    research: getResearchDir,
+    pdfExports: getPdfExportsDir
   };
   return Object.fromEntries(Object.entries(roots).map(([name, resolve]) => {
     try { return [name, resolve()]; } catch (e) { return [name, `ERROR: ${e.message}`]; }
@@ -109,9 +126,87 @@ export function getEntityDocumentsDir() {
   return path.join(getFichierCentralDir(), 'entities');
 }
 
+/**
+ * Supporting documents attached to a sizeable-transaction review (AML):
+ * <fichier_central>/sizeable/<reviewId>/<storedFileName>. Served by the
+ * /sizeable_evidence handler behind a capability token.
+ */
+export function getSizeableEvidenceDir() {
+  return path.join(getFichierCentralDir(), 'sizeable');
+}
+
+/** Server-side copies of GDPR Art. 15/20 exports (record of what was disclosed). */
+export function getGdprExportsDir() {
+  return path.join(getFichierCentralDir(), 'gdpr_exports');
+}
+
+/**
+ * Generated PDF exports, kept 30 minutes for the browser to fetch. Deliberately
+ * ephemeral: PDF_EXPORTS_PATH or the OS temp dir, never the document volume.
+ */
+export function getPdfExportsDir() {
+  return process.env.PDF_EXPORTS_PATH || path.join(os.tmpdir(), 'ambervision-pdf-exports');
+}
+
 /** Meeting-report PDFs. Honours MEETING_REPORTS_PATH, else sits inside the volume. */
 export function getMeetingReportsDir() {
   return process.env.MEETING_REPORTS_PATH || path.join(getFichierCentralDir(), 'meetingReports');
+}
+
+// ---------------------------------------------------------------------------
+// Resolving stored records to files
+// ---------------------------------------------------------------------------
+
+/** One path segment: ids and server-built filenames, never a traversal. */
+export function isSafePathSegment(value) {
+  if (!value || typeof value !== 'string') return false;
+  if (value === '.' || value === '..') return false;
+  return /^[A-Za-z0-9_.-]+$/.test(value) && !value.includes('..');
+}
+
+/**
+ * The filename a record was stored under. Older rows only carry the absolute
+ * `filePath` written at upload time; its last segment is the stored name.
+ */
+function storedNameOf(record) {
+  if (!record) return null;
+  const name = record.storedFileName || (record.filePath ? path.basename(String(record.filePath)) : null);
+  return isSafePathSegment(name) ? name : null;
+}
+
+/** <fichier_central>/<subjectId>/<storedFileName> for a clientDocuments row, or null. */
+export function resolveClientDocumentPath(doc) {
+  const name = storedNameOf(doc);
+  if (!name || !isSafePathSegment(doc.userId)) return null;
+  return path.join(getFichierCentralDir(), doc.userId, name);
+}
+
+/** <fichier_central>/orders/<orderId>/<storedFileName> for an order trace, or null. */
+export function resolveOrderTracePath(orderId, trace) {
+  const name = storedNameOf(trace);
+  if (!name || !isSafePathSegment(orderId)) return null;
+  return path.join(getOrderTracesDir(), orderId, name);
+}
+
+/** <fichier_central>/entities/<entityId>/<storedFileName> for an entity document, or null. */
+export function resolveEntityDocumentPath(entityId, doc) {
+  const name = storedNameOf(doc);
+  if (!name || !isSafePathSegment(entityId)) return null;
+  return path.join(getEntityDocumentsDir(), entityId, name);
+}
+
+const MEETING_REPORT_PDF_NAME = /^[A-Za-z0-9_-]+\.pdf$/;
+
+/**
+ * Absolute path of a meeting-report PDF from what the report stores
+ * (`pdfPath` is the public URL `/meetingReports/<id>.pdf`) or a bare filename.
+ * Null when the value is not a plain PDF name.
+ */
+export function resolveMeetingReportPdfPath(pdfPathOrFilename) {
+  if (!pdfPathOrFilename || typeof pdfPathOrFilename !== 'string') return null;
+  const name = pdfPathOrFilename.split('?')[0].split('/').filter(Boolean).pop();
+  if (!name || !MEETING_REPORT_PDF_NAME.test(name)) return null;
+  return path.join(getMeetingReportsDir(), name);
 }
 
 /**

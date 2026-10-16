@@ -22,7 +22,8 @@ import { authorizeDocumentRequest } from './documentAccess.js';
 import {
   getFichierCentralDir,
   getOrderTracesDir,
-  getMeetingReportsDir,
+  getSizeableEvidenceDir,
+  resolveMeetingReportPdfPath,
   getResearchDir,
   getNewslettersDir,
   describeStorageRoots,
@@ -5393,16 +5394,12 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
     return;
   }
 
-  // Same resolver the PDF writer uses (imports/api/documentStorage.js). It
-  // now honours FICHIER_CENTRAL_PATH, so production reports land on the
-  // persistent volume instead of the container's ephemeral filesystem.
-  const baseDir = getMeetingReportsDir();
-
   try {
-    const filePath = path.join(baseDir, filename);
-    const normalizedPath = path.normalize(filePath);
-    const normalizedDir = path.normalize(baseDir);
-    if (!normalizedPath.startsWith(normalizedDir)) {
+    // Same resolver the PDF writer and the retention sweep use
+    // (imports/api/documentStorage.js): the filename has already been checked
+    // to be a plain <id>.pdf, so the result cannot leave the store.
+    const filePath = resolveMeetingReportPdfPath(filename);
+    if (!filePath) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');
       return;
@@ -5713,9 +5710,11 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
 
     const filePath = path.join(ordersBase, orderId, filename);
 
-    // Security: Prevent directory traversal
-    const normalizedPath = path.normalize(filePath);
-    if (!normalizedPath.startsWith(ordersBase)) {
+    // Security: Prevent directory traversal (same check as the other stores:
+    // the resolved path must sit strictly inside the root, not merely share its prefix)
+    const normalizedPath = path.resolve(filePath);
+    const normalizedBase = path.resolve(ordersBase);
+    if (normalizedPath !== normalizedBase && !normalizedPath.startsWith(normalizedBase + path.sep)) {
       console.error('Security: Attempted directory traversal:', req.url);
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');
@@ -5760,6 +5759,78 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
 
   } catch (error) {
     console.error('Error serving order trace:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Supporting documents attached to sizeable-transaction reviews (AML evidence)
+WebApp.connectHandlers.use('/sizeable_evidence', async (req, res, next) => {
+  // URL format: /sizeable_evidence/{reviewId}/{storedFileName}?dl=<token>
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
+  if (urlParts.length !== 2) return next();
+
+  // Client financial evidence: a capability token minted by
+  // sizeableTransactions.getDocumentUrl is required in every environment.
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  const [reviewId, filename] = urlParts.map(decodeURIComponent);
+  const safeSegment = (s) => /^[A-Za-z0-9_.-]+$/.test(s) && !s.includes('..');
+  if (!safeSegment(reviewId) || !safeSegment(filename)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
+
+  try {
+    const base = path.resolve(getSizeableEvidenceDir());
+    const filePath = path.resolve(path.join(base, reviewId, filename));
+    if (filePath !== base && !filePath.startsWith(base + path.sep)) {
+      console.error('Security: Attempted directory traversal:', req.url);
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Document not found');
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypes = {
+      '.pdf': 'application/pdf',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.tif': 'image/tiff',
+      '.tiff': 'image/tiff',
+      '.heic': 'image/heic',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    };
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+    const disposition = ['.doc', '.docx'].includes(ext) || !contentTypes[ext] ? 'attachment' : 'inline';
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': stat.size,
+      'Content-Disposition': `${disposition}; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, max-age=3600'
+    });
+    res.end(fs.readFileSync(filePath));
+  } catch (error) {
+    console.error('Error serving sizeable evidence:', error);
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Internal server error');
   }

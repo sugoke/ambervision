@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { ClientDocumentsCollection, DOCUMENT_TYPES } from '/imports/api/clientDocuments.js';
 import { MeetingReportsCollection } from '/imports/api/meetingReports.js';
+import { resolveClientDocumentPath } from '/imports/api/documentStorage.js';
 import { ensureUserDirectory } from '../methods/clientDocumentMethods.js';
 
 /**
@@ -28,7 +29,8 @@ export async function removeMeetingReportVisitDocument(report) {
   const doc = await ClientDocumentsCollection.findOneAsync(documentId);
   if (doc) {
     try {
-      if (doc.filePath && fs.existsSync(doc.filePath)) fs.unlinkSync(doc.filePath);
+      const filePath = resolveClientDocumentPath(doc);
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (err) {
       console.error('[MEETING-REPORTS] Could not delete filed visit report file:', err.message);
     }

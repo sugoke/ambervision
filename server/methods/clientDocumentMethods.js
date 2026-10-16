@@ -13,7 +13,8 @@ import { ClientDocumentsCollection, DOCUMENT_TYPES } from '/imports/api/clientDo
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
 import { UsersCollection } from '/imports/api/users.js';
 import { issueDocumentToken } from '../documentAccess.js';
-import { getFichierCentralDir } from '/imports/api/documentStorage.js';
+import { getFichierCentralDir, resolveClientDocumentPath } from '/imports/api/documentStorage.js';
+import { canSeeRestrictedRecords } from '../helpers/accessPolicy.js';
 import { BankAccountsCollection, accountHolderSelector } from '/imports/api/bankAccounts.js';
 
 // A document bound to a portfolio (e.g. a signed portfolio) may only name a bank
@@ -78,6 +79,13 @@ const assertSafeSubjectId = (userId) => {
 // Client documents are KYC/PII. Only the subject themselves, or a staff member
 // whose access scope contains that client, may read or mutate them — a bare
 // valid session is not sufficient.
+/** A document of a client under GDPR restriction is readable by compliance only. */
+const assertNotRestricted = (user, doc) => {
+  if (doc?.gdprRestricted && !canSeeRestrictedRecords(user)) {
+    throw new Meteor.Error('not-authorized', 'This document belongs to a client file under restricted processing');
+  }
+};
+
 const authorizeDocumentSubject = async (user, subjectUserId) => {
   if (user._id === subjectUserId) return;
   // Subject = login id or entity id. A client's scope holds their own ids,
@@ -273,14 +281,17 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Document not found');
     }
     await authorizeDocumentSubject(currentUser, doc.userId);
+    assertNotRestricted(currentUser, doc);
 
     console.log(`🗑️ Deleting client document: ${doc.documentType} for user ${doc.userId}`);
 
-    // Delete file
+    // Delete file — resolved from the store root and the stored name, never
+    // from the absolute path written at upload time (documentStorage.js).
     try {
-      if (fs.existsSync(doc.filePath)) {
-        fs.unlinkSync(doc.filePath);
-        console.log(`   File deleted: ${doc.filePath}`);
+      const filePath = resolveClientDocumentPath(doc);
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`   File deleted: ${filePath}`);
       }
     } catch (error) {
       console.error('Error deleting document file:', error);
@@ -310,6 +321,7 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Document not found');
     }
     await authorizeDocumentSubject(currentUser, doc.userId);
+    assertNotRestricted(currentUser, doc);
 
     // Parse date if string
     let parsedDate = null;
@@ -350,6 +362,7 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Document not found');
     }
     await authorizeDocumentSubject(currentUser, doc.userId);
+    assertNotRestricted(currentUser, doc);
 
     const updateFields = {};
 
@@ -398,6 +411,7 @@ Meteor.methods({
 
     // The client themselves, or a staff member whose scope contains the client
     await authorizeDocumentSubject(user, doc.userId);
+    assertNotRestricted(user, doc);
 
     // Mint a short-lived, single-use token bound to this exact path. The
     // endpoint (/fichier_central) requires it — the URL alone is not enough.

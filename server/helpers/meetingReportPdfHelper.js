@@ -8,7 +8,8 @@ import {
 } from '/imports/api/meetingReports';
 
 /**
- * Render a meeting report into a PDF and write it to public/meetingReports/{id}.pdf.
+ * Render a meeting report into a PDF and write it to <meetingReports store>/{id}.pdf
+ * (getMeetingReportsDir() in imports/api/documentStorage.js — on the document volume).
  * Returns { absolutePath, relativeUrl, base64 }.
  */
 export async function generateMeetingReportPdf(report) {
