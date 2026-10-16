@@ -29,6 +29,9 @@ import { Meteor } from 'meteor/meteor';
  *   operations: [{ operationId, dateText, typeLabel, description, amountText, amountEURText }],
  *   status: 'open' | 'questioned' | 'answered' | 'done',
  *   thread: [{ at, byUserId, byName, role: 'compliance' | 'rm' | 'system', text }],
+ *   documents: [{ _id, fileName, storedFileName, mimeType, fileSize,
+ *                 uploadedAt, uploadedBy, uploadedByName, role: 'compliance' | 'rm' }]
+ *              (supporting evidence; files under <fichier_central>/sizeable/<reviewId>/),
  *   closedBy, closedByName, closedAt, closingNote,
  *   createdAt, updatedAt
  * }

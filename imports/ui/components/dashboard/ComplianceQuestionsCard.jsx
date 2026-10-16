@@ -116,7 +116,7 @@ export default function ComplianceQuestionsCard({ onOpenClient }) {
               )}
             </div>
 
-            <SizeableReviewDetail row={openRow} />
+            <SizeableReviewDetail row={openRow} onChanged={load} />
 
             {!openRow.isDone && (
               <div style={styles.actions}>
@@ -125,7 +125,7 @@ export default function ComplianceQuestionsCard({ onOpenClient }) {
                   value={answer}
                   onChange={e => setAnswer(e.target.value)}
                   rows={4}
-                  placeholder="Origin or destination of the funds, economic rationale, supporting documents provided…"
+                  placeholder="Origin or destination of the funds, economic rationale… (attach the supporting documents above)"
                   style={styles.textarea}
                 />
                 <div>

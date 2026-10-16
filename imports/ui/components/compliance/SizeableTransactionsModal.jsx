@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Modal from '../common/Modal.jsx';
+import { openDocumentWindow } from '../../utils/openDocument.js';
 
 /**
  * Sizeable transactions (AML) - compliance side.
@@ -45,11 +46,143 @@ const STATUS_FILTERS = [
 
 const sessionId = () => localStorage.getItem('sessionId');
 
+const EVIDENCE_ACCEPT = '.pdf,.jpg,.jpeg,.png,.webp,.heic,.gif,.tif,.tiff,.doc,.docx';
+
+// Browsers leave file.type empty for some formats (HEIC, TIFF on Windows);
+// the server checks extension and MIME agree, so supply the one it expects.
+const MIME_BY_EXTENSION = {
+  '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.webp': 'image/webp', '.heic': 'image/heic', '.gif': 'image/gif', '.tif': 'image/tiff', '.tiff': 'image/tiff',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+};
+const mimeTypeOf = (file) => {
+  if (file.type) return file.type;
+  const ext = `.${(file.name.split('.').pop() || '').toLowerCase()}`;
+  return MIME_BY_EXTENSION[ext] || 'application/octet-stream';
+};
+
+// Convert a File to base64 (without the data: prefix)
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result.split(',')[1]);
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
+
 /**
- * Operations + conversation of one review. Shared by the compliance modal and
- * the RM's questions card.
+ * Supporting documents of one review: the evidence corroborating the flows
+ * (bank instruction, invoice, contract, source-of-funds letter…). Compliance
+ * and the account's RM can both attach; who may remove what is decided by the
+ * server (row.canAttach, document.canRemove).
  */
-export function SizeableReviewDetail({ row }) {
+function SizeableDocuments({ row, onChanged }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+
+  const upload = async (file) => {
+    if (!file) return;
+    setBusy('upload');
+    setError(null);
+    try {
+      const base64Data = await fileToBase64(file);
+      await Meteor.callAsync('sizeableTransactions.attachDocument', {
+        reviewId: row._id, fileName: file.name, base64Data, mimeType: mimeTypeOf(file)
+      }, sessionId());
+      await onChanged?.();
+    } catch (err) {
+      setError(err.reason || err.message);
+    } finally {
+      setBusy(null);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const open = async (doc) => {
+    setError(null);
+    try {
+      // Tab opened synchronously inside the click gesture (popup blockers)
+      await openDocumentWindow(() =>
+        Meteor.callAsync('sizeableTransactions.getDocumentUrl', { reviewId: row._id, documentId: doc._id }, sessionId())
+      );
+    } catch (err) {
+      setError(err.reason || err.message);
+    }
+  };
+
+  const remove = async (doc) => {
+    if (!window.confirm(`Remove "${doc.fileName}" from this review?`)) return;
+    setBusy(doc._id);
+    setError(null);
+    try {
+      await Meteor.callAsync('sizeableTransactions.removeDocument', { reviewId: row._id, documentId: doc._id }, sessionId());
+      await onChanged?.();
+    } catch (err) {
+      setError(err.reason || err.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const documents = row.documents || [];
+
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <div style={styles.sectionLabel}>Supporting documents</div>
+      {documents.length === 0 && <div style={{ ...styles.muted, marginBottom: '8px' }}>No document attached yet.</div>}
+      {documents.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+          {documents.map(doc => (
+            <div key={doc._id} style={styles.documentRow}>
+              <span style={{ fontSize: '16px' }}>📄</span>
+              <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+                <button onClick={() => open(doc)} style={styles.documentLink} title="Open">{doc.fileName}</button>
+                <div style={styles.muted}>{doc.metaText}</div>
+              </div>
+              <button onClick={() => open(doc)} style={styles.secondaryButton}>Open</button>
+              {doc.canRemove && (
+                <button
+                  onClick={() => remove(doc)}
+                  disabled={!!busy}
+                  style={{ ...styles.secondaryButton, color: 'var(--loss-color)', opacity: busy ? 0.5 : 1 }}
+                >
+                  {busy === doc._id ? 'Removing…' : 'Remove'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {row.canAttach && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <input
+            ref={inputRef}
+            type="file"
+            accept={EVIDENCE_ACCEPT}
+            style={{ display: 'none' }}
+            onChange={e => upload(e.target.files?.[0])}
+          />
+          <button
+            onClick={() => inputRef.current?.click()}
+            disabled={!!busy}
+            style={{ ...styles.secondaryButton, opacity: busy ? 0.5 : 1 }}
+          >
+            {busy === 'upload' ? 'Uploading…' : '📎 Attach document'}
+          </button>
+          <span style={styles.muted}>PDF, Word or image · 25 MB max</span>
+        </div>
+      )}
+      {error && <div style={styles.error}>{error}</div>}
+    </div>
+  );
+}
+
+/**
+ * Operations, supporting documents and conversation of one review. Shared by
+ * the compliance modal and the RM's questions card.
+ */
+export function SizeableReviewDetail({ row, onChanged }) {
   return (
     <div>
       <div style={styles.sectionLabel}>Operations</div>
@@ -80,6 +213,8 @@ export function SizeableReviewDetail({ row }) {
           </tbody>
         </table>
       </div>
+
+      <SizeableDocuments row={row} onChanged={onChanged} />
 
       <div style={styles.sectionLabel}>Conversation</div>
       {row.thread.length === 0 ? (
@@ -266,7 +401,10 @@ export default function SizeableTransactionsModal({ isOpen, onClose, onOpenClien
                     >
                       {row.clientName}
                     </button>
-                    <div style={styles.muted}>{row.accountText} · {row.operationCountText} · {row.assetText}</div>
+                    <div style={styles.muted}>
+                      {row.accountText} · {row.operationCountText} · {row.assetText}
+                      {row.documentCountText && <> · 📎 {row.documentCountText}</>}
+                    </div>
                   </div>
                   <div style={{ textAlign: 'right', minWidth: '150px' }}>
                     <div style={{ fontWeight: 700, fontSize: '15px', color: row.isIncoming ? 'var(--gain-color)' : 'var(--loss-color)' }}>
@@ -282,7 +420,7 @@ export default function SizeableTransactionsModal({ isOpen, onClose, onOpenClien
 
                 {expanded && (
                   <div style={styles.rowBody}>
-                    <SizeableReviewDetail row={row} />
+                    <SizeableReviewDetail row={row} onChanged={afterAction} />
                     <ComplianceActions row={row} onDone={afterAction} />
                   </div>
                 )}
@@ -303,6 +441,9 @@ export const styles = {
   input: { width: '100%', padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '13px', boxSizing: 'border-box' },
   textarea: { width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '13px', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' },
   primaryButton: { padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
+  secondaryButton: { padding: '6px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600, whiteSpace: 'nowrap' },
+  documentRow: { display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'var(--bg-secondary)', flexWrap: 'wrap' },
+  documentLink: { background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 600, fontSize: '13.5px', color: 'var(--accent-color)', textAlign: 'left', wordBreak: 'break-all' },
   doneButton: { padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap' },
   rowCard: { border: '1px solid var(--border-color)', borderRadius: '10px', background: 'var(--bg-secondary)', overflow: 'hidden' },
   rowHead: { display: 'flex', gap: '14px', alignItems: 'center', padding: '12px 14px', cursor: 'pointer', flexWrap: 'wrap' },
