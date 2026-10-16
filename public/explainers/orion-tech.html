@@ -212,7 +212,7 @@ input.s2::-moz-range-thumb{width:26px;height:26px;border-width:5px;background:va
         <div class="rtitle"><span>Contribution à la moyenne</span><span id="railM"></span></div>
         <div class="rows" id="rows"></div>
         <div class="kpi"><span>Moyenne du panier</span><b id="kAvg">0 %</b><em id="kAvgN"></em></div>
-        <div class="kpi"><span>Remboursement sur USD 1 000 000</span><b id="kRed" class="wait">En cours</b><em id="kRedN"></em></div>
+        <div class="kpi"><span id="kRedL">Remboursement sur USD 1 000 000</span><b id="kRed" class="wait">En cours</b><em id="kRedN"></em></div>
       </aside>
     </section>
 
@@ -266,9 +266,37 @@ const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const RM = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
+/* ---------- Proposal from the URL ----------
+   ?ko=75&rebate=30&notional=1000000 — the advisor's own case travels in the link,
+   becomes the proposal the deck opens on, and "Revenir à la proposition" returns to it.
+   Missing or out-of-range values fall back to the reference product. */
+const Q = new URLSearchParams(location.search);
+const qn = (k, def, min, max) => { const v = parseFloat(String(Q.get(k) || '').replace(',', '.')); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
+const KO0 = Math.round(qn('ko', 75, 1, 300)*10)/1000;                       // knock-out barrier
+const RB0 = Math.min(KO0, Math.round(qn('rebate', 30, 0.5, 300)*10)/1000);  // rebate, never above the barrier
+const NOTIONAL = Math.round(qn('notional', 1000000, 1000, 1e12)), MONTHS = 36;
+// Keep the address bar equal to the case on screen, so the link can be copied at any time.
+function syncUrl(ko, rb){
+  try {
+    const p = new URLSearchParams(location.search);
+    p.set('ko', String(Math.round(ko*1000)/10));
+    p.set('rebate', String(Math.round(rb*1000)/10));
+    if (NOTIONAL !== 1000000) p.set('notional', String(NOTIONAL)); else p.delete('notional');
+    history.replaceState(null, '', location.pathname + '?' + p.toString() + location.hash);
+  } catch (_) {}
+}
+// Widen a slider's range (and refine its step) so the proposal value is selectable as-is.
+function fitRange(el, v){
+  if (!el) return;
+  if (v < +el.min) el.min = String(v);
+  if (v > +el.max) el.max = String(v);
+  const off = st => Math.abs(v/st - Math.round(v/st)) > 1e-9;
+  if (off(+el.step || 1)) el.step = (+el.step || 1) >= 1 ? '0.5' : '0.1';
+  if (off(+el.step)) el.step = '0.01';
+  el.value = String(v);
+}
+
 /* ---------- Data ---------- */
-const NOTIONAL = 1000000, MONTHS = 36;
-const KO0 = 0.75, RB0 = 0.30;    // proposal: knock-out barrier and rebate
 let KO = KO0, RB = RB0;
 const STOCKS = [
   {name:'Action A', col:'#8ED3B8'},
@@ -595,11 +623,12 @@ function setStruct(ko, rb, src){
   KO = ko; RB = rb;
   if (src === 'ko' && RB > KO){ RB = KO; }
   if (src === 'rb' && RB > KO){ KO = RB; }
-  koS.value = Math.round(KO*100); rbS.value = Math.round(RB*100);
+  koS.value = String(Math.round(KO*1000)/10); rbS.value = String(Math.round(RB*1000)/10);
   $('#koV').textContent = PP(KO*100); $('#rbV').textContent = PP(RB*100);
   $('#reset1').disabled = Math.abs(KO - KO0) < 1e-9 && Math.abs(RB - RB0) < 1e-9;
   if (pb.on) stopPlay();
   refresh(); onStruct();
+  syncUrl(KO, RB);
 }
 koS.addEventListener('input', () => setStruct(+koS.value/100, RB, 'ko'));
 rbS.addEventListener('input', () => setStruct(KO, +rbS.value/100, 'rb'));
@@ -661,7 +690,7 @@ function buildPay(){
   $('#ticks').innerHTML = [[-60,'\u221260\u202f%'],[0,'0\u202f%'],[50,'+50\u202f%'],[100,'+100\u202f%']].map(([v,l]) => `<span style="left:calc(23px + (100% - 46px)*${((v+60)/160).toFixed(4)})">${l}</span>`).join('');
   const line = (n, L) => { let d = ''; for (let p=-60; p<=100; p+=1){ d += (p === -60 ? 'M' : 'L') + Xp(p).toFixed(1) + ',' + Yp(red(n, L, p)).toFixed(1); } return d; };
   function draw(){
-    const {n, p} = st, L = Math.round(RB*100);
+    const {n, p} = st, L = Math.round(RB*1000)/10;
     let d = '';
     if (n > 0 && n < 7){
       // Shaded gap between "with fixing" and "without fixing"
@@ -709,8 +738,8 @@ function buildPay(){
     else if (dlt > 0){ g.textContent = `+${nf(dlt, Math.abs(dlt - Math.round(dlt)) > 0.004 ? 2 : 0)} points grâce au rebate`; g.classList.add('pos'); }
     else { g.textContent = `${'\u2212'}${nf(-dlt, Math.abs(dlt - Math.round(dlt)) > 0.004 ? 2 : 0)} points : gain plafonné`; g.classList.add('neg'); }
     $('#mNote').textContent = `Moyenne = (${n} × ${PP(L)} ${p < 0 ? '\u2212' : '+'} ${7 - n} × ${PA(Math.abs(p), 0)}) ÷ 7 = ${PP(avg)}. ` + (avg < 0 ? 'Moyenne négative : le capital est remboursé à 100\u202f%.' : `Remboursement = 100\u202f% + ${PA(avg)}.`);
-    $('#reset').disabled = L === 30;
-    lS.value = L;
+    $('#reset').disabled = Math.abs(L - RB0*100) < 1e-9;
+    lS.value = String(L);
   }
   nS.addEventListener('input', () => { st.n = +nS.value; draw(); });
   lS.addEventListener('input', () => setStruct(KO, +lS.value/100, 'rb'));
@@ -721,10 +750,17 @@ function buildPay(){
 }
 
 /* ---------- Start ---------- */
+// Sliders and labels open on the proposal carried by the URL
+fitRange(koS, Math.round(KO0*1000)/10);
+fitRange(rbS, Math.round(RB0*1000)/10);
+fitRange($('#lS'), Math.round(RB0*1000)/10);
+$('#reset1').textContent = `Revenir à la proposition, KO ${PP(KO0*100)} et rebate ${PP(RB0*100)}`;
+$('#reset').textContent = `Revenir à la proposition, rebate ${PP(RB0*100)}`;
+$('#kRedL').textContent = `Remboursement sur USD ${Math.round(NOTIONAL).toLocaleString('fr-FR')}`;
 buildPay();
 if (window.ResizeObserver) new ResizeObserver(fit).observe(fitEl); else window.addEventListener('resize', fit);
 fit();
-refresh();
+setStruct(KO0, RB0);
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => drawSim());
 showScene('sim');
 requestAnimationFrame(t => { prevT = t; frame(t); });

@@ -192,7 +192,7 @@ input.s2::-moz-range-thumb{width:26px;height:26px;border-width:5px;background:va
         <div class="kpi"><span>Coupons versés</span><b id="kPaid">0 EUR</b><em id="kPaidN"></em></div>
         <div class="kpi"><span>Capital remboursé</span><b id="kCap">En cours</b><em id="kCapN"></em></div>
         <div class="kpi"><span>Durée</span><b id="kDur">En cours</b><em id="kDurN"></em></div>
-        <div class="kpi"><span>Résultat sur EUR 1 000 000</span><b id="kRes">En cours</b><em id="kResN"></em></div>
+        <div class="kpi"><span id="kResL">Résultat sur EUR 1 000 000</span><b id="kRes">En cours</b><em id="kResN"></em></div>
       </aside>
     </section>
 
@@ -232,7 +232,7 @@ input.s2::-moz-range-thumb{width:26px;height:26px;border-width:5px;background:va
   </main>
 
   <footer class="ft">
-    <p>Trajectoires fictives et niveau de coupon indicatif. Capital non garanti sous 70 % à l’échéance. Risque de crédit de l’émetteur.</p>
+    <p>Trajectoires fictives et niveau de coupon indicatif. Capital non garanti sous <span id="barFoot">70 %</span> à l’échéance. Risque de crédit de l’émetteur.</p>
     <p class="nw">Amberlake Partners SAM, régulée par la CCAF</p>
   </footer>
 </div>
@@ -246,8 +246,40 @@ const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const RM = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
+/* ---------- Proposal from the URL ----------
+   ?coupon=10.5&barrier=70&strike=70&notional=1000000 — the advisor's own case travels
+   in the link, becomes the proposal the deck opens on, and "Revenir à la proposition"
+   returns to it. Missing or out-of-range values fall back to the reference product. */
+const Q = new URLSearchParams(location.search);
+const qn = (k, def, min, max) => { const v = parseFloat(String(Q.get(k) || '').replace(',', '.')); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
+const COUPON0 = Math.round(qn('coupon', 10.5, 0.1, 50)*100)/10000;      // p.a., as a fraction
+const BAR0 = Math.round(qn('barrier', 70, 10, 100)*10)/1000;             // protection barrier
+const STRIKE0 = Math.max(BAR0, Math.round(qn('strike', 70, 10, 100)*10)/1000); // strike, never below the barrier
+const NOTIONAL = Math.round(qn('notional', 1000000, 1000, 1e12));
+// Keep the address bar equal to the case on screen, so the link can be copied at any time.
+function syncUrl(cpn, b, k){
+  try {
+    const p = new URLSearchParams(location.search);
+    p.set('coupon', String(Math.round(cpn*10000)/100));
+    p.set('barrier', String(Math.round(b*1000)/10));
+    p.set('strike', String(Math.round(k*1000)/10));
+    if (NOTIONAL !== 1000000) p.set('notional', String(NOTIONAL)); else p.delete('notional');
+    history.replaceState(null, '', location.pathname + '?' + p.toString() + location.hash);
+  } catch (_) {}
+}
+// Widen a slider's range (and refine its step) so the proposal value is selectable as-is.
+function fitRange(el, v){
+  if (!el) return;
+  if (v < +el.min) el.min = String(v);
+  if (v > +el.max) el.max = String(v);
+  const off = st => Math.abs(v/st - Math.round(v/st)) > 1e-9;
+  if (off(+el.step || 1)) el.step = (+el.step || 1) >= 1 ? '0.5' : '0.1';
+  if (off(+el.step)) el.step = '0.01';
+  el.value = String(v);
+}
+
 /* ---------- Data ---------- */
-const NOTIONAL = 1000000, BAR = 0.70;
+const BAR = BAR0;
 const OBS = [3,6,9,12,15,18,21,24];
 const AC = [null,1.00,0.95,0.90,0.85,0.80,0.75,null];
 // Level of the weakest stock at each observation date (fictitious)
@@ -256,11 +288,13 @@ const PRESETS = {
   trou:   [0.91,0.86,0.64,0.78,0.80,0.84,0.88,0.92],
   baisse: [0.90,0.84,0.74,0.66,0.62,0.68,0.63,0.60]
 };
-let coupon = 0.105;
+let coupon = COUPON0;
 let lv = PRESETS.trou.slice();
 
 const nf = (v,d) => v.toLocaleString('fr-FR',{minimumFractionDigits:d,maximumFractionDigits:d});
 const P = (v,d) => nf(v*100, d||0) + '\u202f%';
+// Structure levels: whole percent when round, one decimal otherwise (a 67,5 % barrier stays 67,5 %)
+const Pn = v => { const x = v*100; return nf(x, Math.abs(x - Math.round(x)) > 1e-6 ? 1 : 0) + '\u202f%'; };
 const E = v => Math.round(v).toLocaleString('fr-FR') + '\u00a0EUR';
 const sg = v => v < 0 ? '\u2212' : '+';
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
@@ -287,7 +321,7 @@ function evaluate(levels){
     if (i >= 1 && i <= 6 && w >= AC[i] - 1e-9){ ev.push({i, m, w, type:'ac', n:1+mem, rel:mem}); paid += 1+mem; mem = 0; end = {i, m, w, type:'ac', capital:1}; continue; }
     if (i === 7){
       if (w >= BAR - 1e-9){ ev.push({i, m, w, type:'end', n:1+mem, rel:mem}); paid += 1+mem; end = {i, m, w, type:'end', capital:1}; }
-      else { ev.push({i, m, w, type:'loss', lost:1+mem}); end = {i, m, w, type:'loss', capital:w/BAR, lost:1+mem}; }
+      else { ev.push({i, m, w, type:'loss', lost:1+mem}); end = {i, m, w, type:'loss', capital:w/STRIKE0, lost:1+mem}; }
       mem = 0; continue;
     }
     if (w >= BAR - 1e-9){ ev.push({i, m, w, type:'paid', n:1+mem, rel:mem}); paid += 1+mem; mem = 0; }
@@ -379,7 +413,7 @@ function drawSim(){
   const leg = (draw, label) => { draw(lx); txt(label, lx + 42, 30, {s:18, c:'rgba(245,240,232,.72)', b:'middle'}); lx += 42 + ctx.measureText(label).width + 40; };
   leg(x => { ctx.strokeStyle = '#E8913A'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x, 30); ctx.lineTo(x + 30, 30); ctx.stroke(); }, 'Action la plus faible du panier');
   leg(x => { ctx.fillStyle = 'rgba(246,205,134,.55)'; ctx.fillRect(x, 26, 30, 8); ctx.strokeStyle = '#F6CD86'; ctx.lineWidth = 1; ctx.strokeRect(x + .5, 26.5, 29, 7); }, 'Seuil de rappel');
-  leg(x => { ctx.setLineDash([7,6]); ctx.strokeStyle = '#E07A6C'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x, 30); ctx.lineTo(x + 30, 30); ctx.stroke(); ctx.setLineDash([]); }, 'Barrière 70 %');
+  leg(x => { ctx.setLineDash([7,6]); ctx.strokeStyle = '#E07A6C'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x, 30); ctx.lineTo(x + 30, 30); ctx.stroke(); ctx.setLineDash([]); }, `Barrière ${Pn(BAR)}`);
   leg(x => coin(x + 15, 28, 13), 'Coupon versé');
   leg(x => coin(x + 15, 28, 13, {ghost:true}), 'Coupon en mémoire');
 
@@ -387,14 +421,14 @@ function drawSim(){
   ctx.fillStyle = 'rgba(160,60,52,.2)'; ctx.fillRect(G.x0, Y(BAR), G.xR - G.x0, G.yB - Y(BAR));
   for (let l = 0.3; l <= 1.201; l += 0.1){
     const y = Y(l), lr = Math.round(l*100);
-    if (lr === 100 || lr === 70) continue;
+    if (lr === 100 || Math.abs(lr - BAR*100) < 2.5) continue;
     ctx.strokeStyle = 'rgba(245,240,232,.07)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(G.x0, y); ctx.lineTo(G.xR, y); ctx.stroke();
     if (lr !== 130 && lr !== 30) txt(lr + '\u202f%', G.x0 - 16, y + 6, {s:17, a:'right', c:'rgba(245,240,232,.4)'});
   }
   ctx.strokeStyle = 'rgba(245,240,232,.5)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(G.x0, Y(1)); ctx.lineTo(G.xR, Y(1)); ctx.stroke();
   txt('100\u202f%', G.x0 - 16, Y(1) + 7, {s:21, w:600, a:'right', c:'#F5F0E8'});
   ctx.setLineDash([9,7]); ctx.strokeStyle = '#E07A6C'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(G.x0, Y(BAR)); ctx.lineTo(G.xR, Y(BAR)); ctx.stroke(); ctx.setLineDash([]);
-  txt('70\u202f%', G.x0 - 16, Y(BAR) + 7, {s:21, w:600, a:'right', c:'#F0A091'});
+  txt(Pn(BAR), G.x0 - 16, Y(BAR) + 7, {s:21, w:600, a:'right', c:'#F0A091'});
   ctx.strokeStyle = 'rgba(245,240,232,.22)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(G.x0, G.yB); ctx.lineTo(G.xR, G.yB); ctx.stroke();
 
   /* Region after an early redemption */
@@ -524,11 +558,11 @@ function updateSide(){
   cap.dataset.k = last.type;
   const e = last;
   let s;
-  if (e.type === 'paid') s = `Mois ${e.m} : ${P(e.w)}, au-dessus de 70 %. Coupon versé${e.rel ? `, avec ${e.rel === 1 ? 'celui en mémoire' : `les ${e.rel} en mémoire`}` : ''}.`;
-  else if (e.type === 'mem') s = `Mois ${e.m} : ${P(e.w)}, sous 70 %. Le coupon est mis en mémoire.`;
+  if (e.type === 'paid') s = `Mois ${e.m} : ${P(e.w)}, au-dessus de ${Pn(BAR)}. Coupon versé${e.rel ? `, avec ${e.rel === 1 ? 'celui en mémoire' : `les ${e.rel} en mémoire`}` : ''}.`;
+  else if (e.type === 'mem') s = `Mois ${e.m} : ${P(e.w)}, sous ${Pn(BAR)}. Le coupon est mis en mémoire.`;
   else if (e.type === 'ac') s = `Rappel au mois ${e.m} : ${P(e.w)}, au-dessus du seuil de ${P(AC[e.i])}. Capital remboursé à 100 %${e.rel ? ', coupons en mémoire compris' : ''}.`;
-  else if (e.type === 'end') s = `Échéance : ${P(e.w)}, au-dessus de 70 %. Capital remboursé à 100 %, avec le dernier coupon${e.rel ? (e.rel === 1 ? ' et celui en mémoire' : ` et les ${e.rel} en mémoire`) : ''}.`;
-  else s = `Échéance : ${P(e.w)}, sous 70 %. Remboursement de ${P(e.w)} ÷ 70 % = ${P(e.w/BAR,2)} du capital.`;
+  else if (e.type === 'end') s = `Échéance : ${P(e.w)}, au-dessus de ${Pn(BAR)}. Capital remboursé à 100 %, avec le dernier coupon${e.rel ? (e.rel === 1 ? ' et celui en mémoire' : ` et les ${e.rel} en mémoire`) : ''}.`;
+  else s = `Échéance : ${P(e.w)}, sous ${Pn(BAR)}. Remboursement de ${P(e.w)} ÷ ${Pn(STRIKE0)} = ${P(e.w/STRIKE0,2)} du capital.`;
   span.textContent = s;
 }
 
@@ -612,10 +646,11 @@ $$('[data-preset]').forEach(b => b.addEventListener('click', () => { lv = PRESET
 $('#play').addEventListener('click', play);
 const cpnS = $('#cpnS');
 function setCoupon(c){
-  coupon = Math.round(c*1000)/1000;
+  coupon = Math.round(c*10000)/10000;
   $('#cpnV').textContent = P(coupon, 2);
-  $('#cpnQ').textContent = `${E(qAmt())} par trimestre, sur EUR 1 000 000`;
+  $('#cpnQ').textContent = `${E(qAmt())} par trimestre, sur EUR ${Math.round(NOTIONAL).toLocaleString('fr-FR')}`;
   updateSide();
+  syncUrl(coupon, S.B, S.K);
 }
 cpnS.addEventListener('input', () => setCoupon(+cpnS.value/100));
 
@@ -650,8 +685,8 @@ fsBtn.addEventListener('click', toggleFs);
 document.addEventListener('fullscreenchange', () => { $('#fsTxt').textContent = document.fullscreenElement ? 'Quitter le plein écran' : 'Plein écran'; fit(); });
 
 /* ---------- Maturity chart ---------- */
-const CPN_BAR = 0.70;             // coupon barrier of the proposed product, unchanged here
-const S = {B:0.70, K:0.70};       // protection barrier and strike, adjustable
+const CPN_BAR = BAR0;             // coupon barrier of the proposed product, unchanged here
+const S = {B:BAR0, K:STRIKE0};    // protection barrier and strike, adjustable
 function buildPay(){
   const svg = $('#pay'), Wc = 640, Hc = 438, m = {l:62, r:18, t:22, b:62};
   const pw = Wc - m.l - m.r, ph = Hc - m.t - m.b;
@@ -685,14 +720,14 @@ function buildPay(){
     $('#payBack').innerHTML = b;
     let f = '';
     f += `<line x1="${Xp(bP)}" x2="${Xp(bP)}" y1="${Yp(0)}" y2="${Yp(140)}" stroke="#E07A6C" stroke-width="1.4" stroke-dasharray="5 4"/>`;
-    const bLab = jump ? `Barrière ${P(S.B)}` : `Barrière et strike ${P(S.B)}`;
+    const bLab = jump ? `Barrière ${Pn(S.B)}` : `Barrière et strike ${Pn(S.B)}`;
     const bRight = Xp(bP) + 7 + bLab.length*6.2 < Wc - m.r;
     f += T(bRight ? Xp(bP) + 7 : Xp(bP) - 7, Yp(133), bLab, {s:11, w:500, c:'#F0A091', a:bRight ? 'start' : 'end'});
     if (jump){
       f += `<path d="M${Xp(bP)},${yJ} L${Xp(kP)},${Yp(100)}" stroke="rgba(246,205,134,.55)" stroke-width="1.6" stroke-dasharray="3 4" fill="none"/>`;
       f += `<line x1="${Xp(bP)}" x2="${Xp(bP)}" y1="${yJ}" y2="${Yp(100)}" stroke="rgba(242,165,83,.6)" stroke-width="1.6" stroke-dasharray="2 3"/>`;
       f += `<circle cx="${Xp(kP)}" cy="${Yp(100)}" r="4.5" fill="#1B2A4A" stroke="#F6CD86" stroke-width="2"/>`;
-      f += T(Xp(kP), Yp(100) - 12, `Strike ${P(S.K)}`, {s:11.5, w:600, c:'#F6CD86', a:'middle'});
+      f += T(Xp(kP), Yp(100) - 12, `Strike ${Pn(S.K)}`, {s:11.5, w:600, c:'#F6CD86', a:'middle'});
     }
     f += `<path d="M${Xp(-70)},${Yp(pa(-70))} L${Xp(bP)},${yJ}" stroke="#F2A553" stroke-width="3.6" fill="none" stroke-linecap="round"/>`;
     f += `<path d="M${Xp(bP)},${Yp(100)} L${Xp(40)},${Yp(100)}" stroke="#F2A553" stroke-width="3.6" fill="none" stroke-linecap="round"/>`;
@@ -706,8 +741,9 @@ function buildPay(){
     if (Math.abs(bP) >= 9) ticks.push([0, '0\u202f%']);
     ticks.push([40, '+40\u202f%']);
     $('#ticks').innerHTML = ticks.map(([v, l]) => `<span style="left:${pos(v)}${v === bP ? ';color:#F0A091' : ''}">${l}</span>`).join('');
-    $('#barV').textContent = P(S.B); $('#strV').textContent = P(S.K);
-    $('#reset').disabled = Math.abs(S.B - 0.70) < 1e-9 && Math.abs(S.K - 0.70) < 1e-9;
+    $('#barV').textContent = Pn(S.B); $('#strV').textContent = Pn(S.K);
+    $('#reset').disabled = Math.abs(S.B - BAR0) < 1e-9 && Math.abs(S.K - STRIKE0) < 1e-9;
+    syncUrl(coupon, S.B, S.K);
   }
   const upd = () => {
     const v = +inp.value, l = 1 + v/100, pr = pa(v)/100, x = Xp(v);
@@ -725,19 +761,26 @@ function buildPay(){
     else { g.textContent = `+${nf(d, Number.isInteger(d) ? 0 : 2)} points pour le produit`; g.classList.add('pos'); }
     let note;
     if (l >= S.B - 1e-9) note = v === 0 ? 'Capital remboursé à 100\u202f%.' : 'La baisse est absorbée : capital remboursé à 100\u202f%.';
-    else note = `Sous la barrière : ${P(l)} ÷ ${P(S.K)} = ${P(pr, Math.abs(pr*100 - Math.round(pr*100)) > 1e-6 ? 2 : 0)}.` + (S.K >= 1 - 1e-9 ? ' Avec un strike à 100\u202f%, la perte suit l’action.' : '');
-    note += cpn ? ' Le dernier coupon et ceux en mémoire sont versés.' : ' Sous 70\u202f%, le dernier coupon et ceux en mémoire ne sont pas versés.';
+    else note = `Sous la barrière : ${P(l)} ÷ ${Pn(S.K)} = ${P(pr,Math.abs(pr*100 - Math.round(pr*100)) > 1e-6 ? 2 : 0)}.` + (S.K >= 1 - 1e-9 ? ' Avec un strike à 100\u202f%, la perte suit l’action.' : '');
+    note += cpn ? ' Le dernier coupon et ceux en mémoire sont versés.' : ` Sous ${Pn(CPN_BAR)}, le dernier coupon et ceux en mémoire ne sont pas versés.`;
     n.textContent = note;
   };
   barS.addEventListener('input', () => { S.B = +barS.value/100; if (S.K < S.B){ S.K = S.B; strS.value = barS.value; } drawStruct(); upd(); });
   strS.addEventListener('input', () => { S.K = +strS.value/100; if (S.B > S.K){ S.B = S.K; barS.value = strS.value; } drawStruct(); upd(); });
-  $('#reset').addEventListener('click', () => { S.B = 0.70; S.K = 0.70; barS.value = 70; strS.value = 70; drawStruct(); upd(); });
+  $('#reset').addEventListener('click', () => { S.B = BAR0; S.K = STRIKE0; barS.value = String(BAR0*100); strS.value = String(STRIKE0*100); drawStruct(); upd(); });
   inp.addEventListener('input', upd);
   drawStruct(); upd();
 }
 
 /* ---------- Start ---------- */
-buildPay(); setCoupon(0.105);
+// Sliders and labels open on the proposal carried by the URL
+fitRange(cpnS, Math.round(COUPON0*10000)/100);
+fitRange($('#barS'), Math.round(BAR0*1000)/10);
+fitRange($('#strS'), Math.round(STRIKE0*1000)/10);
+$('#reset').textContent = `Revenir à la proposition, ${Pn(BAR0)} et ${Pn(STRIKE0)}`;
+$('#kResL').textContent = `Résultat sur EUR ${Math.round(NOTIONAL).toLocaleString('fr-FR')}`;
+$('#barFoot').textContent = Pn(BAR0);
+buildPay(); setCoupon(COUPON0);
 if (window.ResizeObserver) new ResizeObserver(fit).observe(fitEl); else window.addEventListener('resize', fit);
 fit();
 refresh();
