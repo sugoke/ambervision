@@ -155,6 +155,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
       'final_observation': '🎯',
       'product_matured': '✅',
       'memory_coupon_added': '🧠',
+      'client_birthday': '🎂',
       'barrier_recovered': '📈'
     };
     return icons[eventType] || '📢';
@@ -169,6 +170,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
       'final_observation': '#8b5cf6',
       'product_matured': '#059669',
       'memory_coupon_added': '#a855f7',
+      'client_birthday': '#ec4899',
       'barrier_recovered': 'var(--gain-color)'
     };
     return colors[eventType] || '#6b7280';

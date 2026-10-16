@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { consumePendingClientFile, CLIENT_FILE_OPEN_EVENT } from './utils/pendingClientFile.js';
 import Dashboard from './Dashboard.jsx';
 import DashboardSwitcher from './components/dashboard/DashboardSwitcher.jsx';
 import StructuredProductInterface from './StructuredProductInterface.jsx';
@@ -37,6 +38,18 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
 
   // Client file to open when arriving on the Clients section from a dashboard link
   const [pendingClientEntityId, setPendingClientEntityId] = useState(null);
+
+  // Same hand-off from outside the dashboard (a birthday reminder in the
+  // notification center): the app routes to Clients and the file is opened here
+  useEffect(() => {
+    const openPending = () => {
+      const entityId = consumePendingClientFile();
+      if (entityId) setPendingClientEntityId(entityId);
+    };
+    openPending();
+    window.addEventListener(CLIENT_FILE_OPEN_EVENT, openPending);
+    return () => window.removeEventListener(CLIENT_FILE_OPEN_EVENT, openPending);
+  }, []);
   
   // Persist editing product across page refreshes
   const [editingProduct, setEditingProduct] = useState(() => {

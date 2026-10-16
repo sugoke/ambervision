@@ -38,6 +38,7 @@ const NotificationsPage = ({ currentUser }) => {
     { value: 'final_observation', label: 'Final Observation' },
     { value: 'product_matured', label: 'Product Matured' },
     { value: 'memory_coupon_added', label: 'Memory Coupon' },
+    { value: 'client_birthday', label: 'Client Birthday' },
     { value: 'barrier_recovered', label: 'Barrier Recovered' }
   ];
 
@@ -118,6 +119,7 @@ const NotificationsPage = ({ currentUser }) => {
       'final_observation': '🎯',
       'product_matured': '✅',
       'memory_coupon_added': '🧠',
+      'client_birthday': '🎂',
       'barrier_recovered': '📈'
     };
     return icons[eventType] || '📢';
@@ -132,6 +134,7 @@ const NotificationsPage = ({ currentUser }) => {
       'final_observation': '#8b5cf6',
       'product_matured': '#059669',
       'memory_coupon_added': '#a855f7',
+      'client_birthday': '#ec4899',
       'barrier_recovered': 'var(--gain-color)'
     };
     return colors[eventType] || '#6b7280';
@@ -146,6 +149,7 @@ const NotificationsPage = ({ currentUser }) => {
       'final_observation': 'Final Observation',
       'product_matured': 'Product Matured',
       'memory_coupon_added': 'Memory Coupon',
+      'client_birthday': 'Client Birthday',
       'barrier_recovered': 'Barrier Recovered'
     };
     return names[eventType] || eventType;
