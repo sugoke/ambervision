@@ -10,6 +10,7 @@ import { UsersCollection } from '../../imports/api/users.js';
 import { isSystemSession } from '../systemAuth.js';
 import { requireRole } from '../helpers/sessionAuth.js';
 import { PMSHoldingsHelpers, PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { checkDataFreshness } from '../../imports/api/helpers/dataFreshness.js';
 import { PMSOperationsHelpers, PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { PortfolioSnapshotHelpers, PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
 import { BankPositionParser } from '../../imports/api/bankPositionParser.js';
@@ -1221,8 +1222,16 @@ Meteor.methods({
       const archivedUserIdSet = new Set(archivedExclusion.userIds);
       const archivedEntityIdSet = new Set(archivedExclusion.entityIds);
       const archivedBankAccountIdSet = new Set(archivedExclusion.bankAccountIds);
+      // Alerts are raised only from fresh bank data. A stale file (bank failed to
+      // deliver today's positions, backfill, re-processing an old file) describes a
+      // past state; alerting on it is noise, and the next fresh sync will re-check.
+      const fileFreshness = checkDataFreshness(fileDate);
+      if (fileFreshness.status !== 'fresh') {
+        console.log(`[BANK_POSITIONS] Data of ${filename} is not fresh (${fileFreshness.message}) - cash and allocation alerts skipped`);
+      }
       try {
         for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
+          if (fileFreshness.status !== 'fresh') break;
           const portfolioUserId = portfolioPositions[0].userId;
 
           // Find the bank account for this portfolio
@@ -1256,6 +1265,17 @@ Meteor.methods({
             bankId: connection.bankId,
             isLatest: true
           }).fetchAsync();
+
+          // The cash balance is summed over every latest holding of the portfolio, not
+          // only this file's rows: if any of them is older than the expected date the
+          // balance mixes days, so no alert (and no resolution) until data is fresh.
+          const staleHolding = allHoldings
+            .map(h => checkDataFreshness(h.fileDate || h.snapshotDate))
+            .find(f => f.status !== 'fresh');
+          if (staleHolding) {
+            console.log(`[CASH_CHECK] Portfolio ${portfolioCode}: holdings not fresh (${staleHolding.message}) - alerts skipped`);
+            continue;
+          }
 
           // Get currency rates for EUR conversion (same as Cash Monitor)
           const currencyRates = await CurrencyRateCacheCollection.find({
