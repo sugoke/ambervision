@@ -371,6 +371,20 @@ When bank rates are missing (falls back to EOD):
 - **Testing**: Mocha
 - **Build**: Meteor's built-in build system
 
+## File Storage and Record Retention
+
+### Where files live
+`imports/api/documentStorage.js` is the only place that resolves a storage root. Production mounts three volume paths (`deploy/mup.js`): `BANKFILES_PATH`, `TERMSHEETS_PATH`, `FICHIER_CENTRAL_PATH`; every other store (client KYC docs, `orders/` traces, `entities/` closure letters, `sizeable/` AML evidence, `meetingReports/`, `research/`, `newsletters/`, `gdpr_exports/`) nests under fichier_central. Generated PDF exports are deliberately ephemeral (`PDF_EXPORTS_PATH` or the OS temp dir, 30-minute TTL). Startup logs every root as `[STORAGE] Document roots`; a missing `*_PATH` throws when `NODE_ENV=production`.
+
+- Never build a path from `process.cwd()`, `__dirname` or an env var elsewhere; add a `getXDir()` helper to documentStorage.js and a token-gated WebApp handler in `server/main.js`.
+- A record's stored `filePath` is informational. Read and delete through `resolveClientDocumentPath`, `resolveOrderTracePath`, `resolveEntityDocumentPath`, `resolveMeetingReportPdfPath` (root + stored name), so files survive a mount change and pre-migration rows still resolve.
+
+### Retention (regulated financial intermediary)
+`server/helpers/retentionPolicy.js`: the client file (KYC documents, orders and email traces, meeting reports and their PDFs, closure letters, sizeable-transaction evidence) is kept **5 years after the archive date** of the client entity (`archivedAt`). Raw bank files are **never purged**.
+
+- A GDPR erasure request (`gdpr.anonymizeClient`) only *restricts processing*: logins off, records flagged `gdprRestricted` + `retentionUntil`, visible to superadmin and compliance only (`restrictedRecordsClause` in `server/helpers/accessPolicy.js`, applied in the publications and by-id guards). It refuses while the entity is not archived.
+- Physical destruction happens only in the nightly retention sweep (`destroyExpiredRestrictedClients`, called from `dataRetentionJob`), once `retentionUntil` has passed. Do not add deletion of client-file artefacts anywhere else; soft-delete instead.
+
 ## Development Notes
 
 ### File Imports

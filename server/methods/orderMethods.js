@@ -4,13 +4,13 @@ import fs from 'fs';
 import path from 'path';
 import { Random } from 'meteor/random';
 import { requireSession } from '../helpers/sessionAuth.js';
-import { SEE_ALL_ROLES, RM_LIKE_ROLES, ORDER_BOOK_ROLES } from '../helpers/accessPolicy.js';
+import { SEE_ALL_ROLES, RM_LIKE_ROLES, ORDER_BOOK_ROLES, canSeeRestrictedRecords, restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import {
   resolveScope, isClientInScope, assertClientInScope, accountBelongsToClient, ordersSelector
 } from '../helpers/accessScope.js';
 import { portfolioCodeRegex } from '/imports/utils/portfolioCode.js';
 import { issueDocumentToken } from '../documentAccess.js';
-import { getOrderTracesDir } from '/imports/api/documentStorage.js';
+import { getOrderTracesDir, resolveOrderTracePath } from '/imports/api/documentStorage.js';
 import { promoteOrderTermsheetToProduct, TERMSHEET_SOURCES as PRODUCT_TERMSHEET_SOURCES } from '../helpers/termsheetSync.js';
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
 import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
@@ -203,13 +203,14 @@ async function loadOrderIssuer(order) {
 function loadInitialTermsheetAttachment(order) {
   if (!order || order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT) return null;
   const trace = (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET);
-  if (!trace?.filePath) return null;
+  const tracePath = trace ? resolveOrderTracePath(order._id, trace) : null;
+  if (!tracePath) return null;
   try {
-    if (!fs.existsSync(trace.filePath)) {
-      console.warn(`[ORDERS] Termsheet file missing on disk for order ${order.orderReference}: ${trace.filePath}`);
+    if (!fs.existsSync(tracePath)) {
+      console.warn(`[ORDERS] Termsheet file missing on disk for order ${order.orderReference}: ${tracePath}`);
       return null;
     }
-    const buffer = fs.readFileSync(trace.filePath);
+    const buffer = fs.readFileSync(tracePath);
     const fileName = trace.fileName || `termsheet_${order.orderReference}.pdf`;
     const ext = path.extname(fileName).toLowerCase();
     return {
@@ -385,6 +386,11 @@ const REVIEW_LOCK_TTL_MS = 5 * 60 * 1000;
 async function validateOrderAccess(order, user) {
   if (!order) {
     throw new Meteor.Error('not-found', 'Order not found');
+  }
+
+  // An order of a client under GDPR restriction is readable by compliance only
+  if (order.gdprRestricted && !canSeeRestrictedRecords(user)) {
+    throw new Meteor.Error('not-authorized', 'This order belongs to a client file under restricted processing');
   }
 
   // Admins, superadmins, and compliance can access all orders
@@ -2780,9 +2786,10 @@ ${userDisplayName}
       const legacyTrace = (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET);
       if (legacyTrace) {
         try {
-          if (legacyTrace.filePath && fs.existsSync(legacyTrace.filePath)) {
-            fs.unlinkSync(legacyTrace.filePath);
-            console.log(`   Deleted legacy termsheet trace file: ${legacyTrace.filePath}`);
+          const legacyPath = resolveOrderTracePath(orderId, legacyTrace);
+          if (legacyPath && fs.existsSync(legacyPath)) {
+            fs.unlinkSync(legacyPath);
+            console.log(`   Deleted legacy termsheet trace file: ${legacyPath}`);
           }
         } catch (err) {
           console.error('Error deleting legacy termsheet trace file:', err);
@@ -3008,7 +3015,8 @@ ${userDisplayName}
     // The owner clause is ANDed on, never merged key-by-key: the filters above
     // build their own keys (including $or for search) and a collision would
     // silently drop the owner predicate.
-    const finalQuery = own ? { $and: [own, query] } : query;
+    // Orders of a client under GDPR restriction stay visible to compliance only.
+    const finalQuery = { $and: [...(own ? [own] : []), restrictedRecordsClause(user), query] };
 
     let total;
     let orders;
@@ -4908,9 +4916,10 @@ const writeTraceFileToOrder = async ({
     : existingTraces.find(t => t.traceType === traceType);
   if (existingTrace) {
     try {
-      if (existingTrace.filePath && fs.existsSync(existingTrace.filePath)) {
-        fs.unlinkSync(existingTrace.filePath);
-        console.log(`   Deleted old trace: ${existingTrace.filePath}`);
+      const existingPath = resolveOrderTracePath(order._id, existingTrace);
+      if (existingPath && fs.existsSync(existingPath)) {
+        fs.unlinkSync(existingPath);
+        console.log(`   Deleted old trace: ${existingPath}`);
       }
     } catch (err) {
       console.error('Error deleting old trace file:', err);
@@ -5800,11 +5809,12 @@ Meteor.methods({
     }
 
     // Delete file from disk (only for file traces, not phone traces)
-    if (trace.filePath && trace.traceMode !== 'phone') {
+    const tracePath = trace.traceMode !== 'phone' ? resolveOrderTracePath(orderId, trace) : null;
+    if (tracePath) {
       try {
-        if (fs.existsSync(trace.filePath)) {
-          fs.unlinkSync(trace.filePath);
-          console.log(`[ORDERS] Deleted trace file: ${trace.filePath}`);
+        if (fs.existsSync(tracePath)) {
+          fs.unlinkSync(tracePath);
+          console.log(`[ORDERS] Deleted trace file: ${tracePath}`);
         }
       } catch (err) {
         console.error('Error deleting trace file:', err);
@@ -5887,10 +5897,11 @@ Meteor.methods({
       : existingTraces.find(t => t.traceType === traceType);
     if (existingTrace) {
       // If it was a file trace, delete the file from disk
-      if (existingTrace.filePath && existingTrace.traceMode !== 'phone') {
+      const existingPath = existingTrace.traceMode !== 'phone' ? resolveOrderTracePath(orderId, existingTrace) : null;
+      if (existingPath) {
         try {
-          if (fs.existsSync(existingTrace.filePath)) {
-            fs.unlinkSync(existingTrace.filePath);
+          if (fs.existsSync(existingPath)) {
+            fs.unlinkSync(existingPath);
           }
         } catch (err) {
           console.error('Error deleting old trace file:', err);
@@ -6097,7 +6108,8 @@ Meteor.methods({
 
     try {
       const { simpleParser } = require('mailparser');
-      const filePath = trace.filePath;
+      const filePath = resolveOrderTracePath(orderId, trace);
+      if (!filePath || !fs.existsSync(filePath)) throw new Meteor.Error('not-found', 'Trace file not found on disk');
       const fileContent = fs.readFileSync(filePath);
       const parsed = await simpleParser(fileContent);
 
@@ -6141,12 +6153,13 @@ Meteor.methods({
     const senderAddresses = new Set(); // lowercase, from: addresses collected across traces
     const traces = order.emailTraces || [];
     for (const trace of traces) {
-      if (!trace.filePath || !fs.existsSync(trace.filePath)) continue;
+      const tracePath = resolveOrderTracePath(order._id, trace);
+      if (!tracePath || !fs.existsSync(tracePath)) continue;
       const ext = (trace.fileName || '').toLowerCase();
       try {
         if (ext.endsWith('.eml')) {
           const { simpleParser } = require('mailparser');
-          const parsed = await simpleParser(fs.readFileSync(trace.filePath));
+          const parsed = await simpleParser(fs.readFileSync(tracePath));
           emailContent += `--- Email: ${trace.fileName} ---\n`;
           emailContent += `From: ${parsed.from?.text || ''}\n`;
           emailContent += `To: ${parsed.to?.text || ''}\n`;
@@ -6164,7 +6177,7 @@ Meteor.methods({
           // For PDFs, extract text if possible
           try {
             const pdfParse = require('pdf-parse');
-            const pdfData = await pdfParse(fs.readFileSync(trace.filePath));
+            const pdfData = await pdfParse(fs.readFileSync(tracePath));
             emailContent += `--- PDF: ${trace.fileName} ---\n`;
             emailContent += pdfData.text || '[Could not extract text]';
             emailContent += '\n\n';
@@ -6173,7 +6186,7 @@ Meteor.methods({
           }
         } else {
           // Plain text / HTML files
-          const content = fs.readFileSync(trace.filePath, 'utf8');
+          const content = fs.readFileSync(tracePath, 'utf8');
           emailContent += `--- File: ${trace.fileName} ---\n`;
           emailContent += content.replace(/<[^>]+>/g, ' ').substring(0, 5000);
           emailContent += '\n\n';
@@ -7113,7 +7126,8 @@ async function parseEmailTraceContents(order) {
   const parsed = {};
 
   for (const trace of traces) {
-    if (!trace.filePath || !fs.existsSync(trace.filePath)) {
+    const tracePath = resolveOrderTracePath(order._id, trace);
+    if (!tracePath || !fs.existsSync(tracePath)) {
       parsed[trace._id] = { error: 'File not found on disk' };
       continue;
     }
@@ -7122,7 +7136,7 @@ async function parseEmailTraceContents(order) {
     try {
       if (ext.endsWith('.eml')) {
         const { simpleParser } = require('mailparser');
-        const fileContent = fs.readFileSync(trace.filePath);
+        const fileContent = fs.readFileSync(tracePath);
         const email = await simpleParser(fileContent);
         parsed[trace._id] = {
           type: 'email',
@@ -7139,7 +7153,7 @@ async function parseEmailTraceContents(order) {
       } else if (ext.endsWith('.pdf')) {
         try {
           const pdfParse = require('pdf-parse');
-          const pdfData = await pdfParse(fs.readFileSync(trace.filePath));
+          const pdfData = await pdfParse(fs.readFileSync(tracePath));
           parsed[trace._id] = {
             type: 'pdf',
             text: pdfData.text || '[Could not extract text]'
@@ -7148,7 +7162,7 @@ async function parseEmailTraceContents(order) {
           parsed[trace._id] = { type: 'pdf', error: 'Could not extract PDF text' };
         }
       } else if (ext.endsWith('.html') || ext.endsWith('.htm')) {
-        const content = fs.readFileSync(trace.filePath, 'utf8');
+        const content = fs.readFileSync(tracePath, 'utf8');
         // Strip HTML tags for plain text display in PDF
         const textContent = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         parsed[trace._id] = {

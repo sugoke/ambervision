@@ -58,3 +58,16 @@ export const isAdminRole = (user) => !!user && ADMIN_ROLES.includes(user.role);
 export const isRmLike = (user) => !!user && RM_LIKE_ROLES.includes(user.role);
 export const isStaff = (user) => !!user && STAFF_ROLES.includes(user.role);
 export const isClientRole = (user) => !!user && user.role === USER_ROLES.CLIENT;
+
+// --- Records under GDPR restriction of processing -----------------------------
+//
+// A client who asked for erasure while the firm is still bound to keep their
+// file (5 years after the end of the relationship — see
+// server/helpers/retentionPolicy.js) has their records flagged
+// `gdprRestricted: true`. They stay on disk and in the database for compliance
+// and legal purposes only: superadmins and compliance can still open them,
+// everybody else no longer sees them. Publications and list methods AND this
+// clause into their selector.
+export const RESTRICTED_RECORD_VIEWER_ROLES = Object.freeze([USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE]);
+export const canSeeRestrictedRecords = (user) => !!user && RESTRICTED_RECORD_VIEWER_ROLES.includes(user.role);
+export const restrictedRecordsClause = (user) => (canSeeRestrictedRecords(user) ? {} : { gdprRestricted: { $ne: true } });

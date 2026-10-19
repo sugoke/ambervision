@@ -21,9 +21,9 @@
  */
 
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { Random } from 'meteor/random';
+import { getPdfExportsDir } from '/imports/api/documentStorage.js';
 
 /** Public URL prefix served by the /pdf-exports WebApp handler. */
 export const PDF_EXPORT_URL_PREFIX = '/pdf-exports';
@@ -34,9 +34,9 @@ export const SAFE_PDF_EXPORT_FILENAME = /^[A-Za-z0-9_-]+\.pdf$/;
 /** How long a generated export stays on disk before the sweeper removes it. */
 export const PDF_EXPORT_TTL_MS = 30 * 60 * 1000;
 
-export function getPdfExportsDir() {
-  return process.env.PDF_EXPORTS_PATH || path.join(os.tmpdir(), 'ambervision-pdf-exports');
-}
+// Resolved with every other storage root in imports/api/documentStorage.js,
+// so the startup log lists it alongside the volume-backed stores.
+export { getPdfExportsDir };
 
 /**
  * Resolve a stored name to its path, refusing anything that is not a plain

@@ -2,6 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 
 import { SessionHelpers } from '/imports/api/sessions';
+import { restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import {
   MeetingReportsCollection,
@@ -33,7 +34,8 @@ Meteor.publish('meetingReports.list', async function (sessionId, filters = {}) {
 
   const isAdminUser = ADMIN_ROLES.includes(user.role);
   const visibility = await MeetingReportHelpers.buildVisibilityFilter(user);
-  const query = { ...visibility };
+  // Reports of a client under GDPR restriction stay visible to compliance only
+  const query = { $and: [visibility, restrictedRecordsClause(user)] };
 
   if (!filters?.includeDeleted || !isAdminUser) {
     query.status = { $ne: REPORT_STATUS.DELETED };

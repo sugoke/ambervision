@@ -26,7 +26,7 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts.js';
 import { scrapePrice } from '/imports/api/priceScraperService.js';
 import { convertToEUR, buildEURRatesMap, aggregateSnapshotsByDay } from '../helpers/currencyHelpers.js';
 import { refreshReferenceCurrencyOverrides } from '../helpers/referenceCurrencyOverrides.js';
-import { getBankfilesDir } from '../../imports/api/documentStorage.js';
+
 
 /**
  * Cron Jobs Configuration
@@ -123,6 +123,7 @@ let cronJobs = {
   priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
   settlementCheck: null,     // Daily settlement reconciliation for executed orders
   dataRetention: null,       // GDPR retention: purge expired logs, leads, sessions, old bank files
+  birthdayReminders: null,   // Morning reminders to RMs about their clients' birthdays
   bankReplyScan: null,       // Outlook: spot bank replies to orders sent via Graph (notifies only)
   limitOrderWatch: null      // Alerts when the market reaches a live limit order's level
 };
@@ -174,6 +175,12 @@ let scheduleInfo = {
   dataRetention: {
     name: 'dataRetention',
     schedule: '0 2 * * *', // 02:00 CET daily — GDPR retention sweeps
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  birthdayReminders: {
+    name: 'birthdayReminders',
+    schedule: '0 7 * * *', // 07:00 CET daily — in the RM's notifications before the day starts
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -1841,15 +1848,12 @@ async function settlementCheckJob(triggerSource = 'cron') {
 async function dataRetentionJob(triggerSource = 'cron') {
   const logId = await CronJobLogHelpers.startJob('dataRetention', triggerSource);
   try {
-    const fs = require('fs');
-    const path = require('path');
     const cfg = Meteor.settings?.private?.RETENTION || {};
     const days = {
       cronJobLogs: cfg.cronJobLogsDays ?? 90,
       bankConnectionLogs: cfg.bankConnectionLogsDays ?? 90,
       chartData: cfg.chartDataDays ?? 30,
-      landingLeads: cfg.landingLeadsDays ?? 365,
-      bankFiles: cfg.bankFilesDays ?? 730
+      landingLeads: cfg.landingLeadsDays ?? 365
     };
     const results = {};
 
@@ -1877,28 +1881,19 @@ async function dataRetentionJob(triggerSource = 'cron') {
       createdAt: { $lt: new Date(Date.now() - days.landingLeads * 24 * 60 * 60 * 1000) }
     });
 
-    // 6. Raw bank files older than the retention window (they contain IBANs and
-    //    full position data; the parsed rows in pmsHoldings/pmsOperations are the
-    //    retained financial record). Age is judged by file mtime.
-    const bankfilesRoot = getBankfilesDir();
-    results.bankFiles = 0;
-    if (fs.existsSync(bankfilesRoot)) {
-      const cutoff = Date.now() - days.bankFiles * 24 * 60 * 60 * 1000;
-      const walk = (dir) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const p = path.join(dir, entry.name);
-          try {
-            if (entry.isDirectory()) {
-              walk(p);
-            } else if (fs.statSync(p).mtimeMs < cutoff) {
-              fs.unlinkSync(p);
-              results.bankFiles++;
-            }
-          } catch (e) { /* best effort per file */ }
-        }
-      };
-      walk(bankfilesRoot);
-    }
+    // 6. Client files whose GDPR restriction has reached the end of the
+    //    regulatory retention period (server/helpers/retentionPolicy.js): the
+    //    only place where KYC documents, order traces, meeting-report PDFs and
+    //    AML evidence are physically destroyed.
+    const { destroyExpiredRestrictedClients } = require('../methods/gdprMethods.js');
+    const gdpr = await destroyExpiredRestrictedClients();
+    results.gdprDestroyed = gdpr.destroyed;
+    results.gdprAwaitingRetentionEnd = gdpr.awaitingRetentionEnd;
+    results.archivedPastRetention = gdpr.archivedPastRetention;
+
+    // Raw bank files (positions, operations, SG archives) are NOT purged: they
+    // are the transaction records themselves and are kept indefinitely on the
+    // document volume (decided 2026-10-16).
 
     const summary = Object.entries(results).map(([k, v]) => `${k}: ${v}`).join(', ');
     console.log(`[RETENTION] Purged — ${summary}`);
@@ -1910,6 +1905,33 @@ async function dataRetentionJob(triggerSource = 'cron') {
     console.error('[RETENTION] Job failed:', error);
     await CronJobLogHelpers.failJob(logId, error);
     scheduleInfo.dataRetention.lastFinishedAt = new Date();
+    throw error;
+  }
+}
+
+/**
+ * JOB 9: Birthday Reminders
+ * Runs daily at 07:00 CET. Tells each RM (and their assistants) about the
+ * birthdays of their clients and their clients' family members, a week ahead
+ * and on the day. Idempotent: a reminder is sent once per person, date and
+ * lead time (server/helpers/birthdayReminders.js).
+ */
+async function birthdayRemindersJob(triggerSource = 'cron') {
+  const logId = await CronJobLogHelpers.startJob('birthdayReminders', triggerSource);
+  try {
+    const { sendBirthdayReminders } = require('../helpers/birthdayReminders.js');
+    const results = await sendBirthdayReminders();
+    await CronJobLogHelpers.completeJob(logId, {
+      ...results,
+      summary: `${results.birthdaysDue} birthday(s) due, ${results.remindersSent} reminder(s) sent`
+    });
+    scheduleInfo.birthdayReminders.lastFinishedAt = new Date();
+    scheduleInfo.birthdayReminders.nextScheduledRun = getNextRunTime(scheduleInfo.birthdayReminders.schedule);
+    return results;
+  } catch (error) {
+    console.error('[BIRTHDAYS] Job failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    scheduleInfo.birthdayReminders.lastFinishedAt = new Date();
     throw error;
   }
 }
@@ -2212,6 +2234,21 @@ export async function initializeCronJobs() {
 
   console.log('✓ Data Retention scheduled for 02:00 CET daily');
 
+  // Birthday Reminders — 07:00 CET daily
+  cronJobs.birthdayReminders = cron.schedule(scheduleInfo.birthdayReminders.schedule, Meteor.bindEnvironment(async () => {
+    console.log('[CRON] Birthday Reminders CRON trigger fired at:', new Date().toISOString());
+    try {
+      await birthdayRemindersJob();
+    } catch (error) {
+      console.error('[CRON] Birthday Reminders job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Birthday Reminders scheduled for 07:00 CET daily');
+
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
 }
@@ -2429,6 +2466,29 @@ if (Meteor.isServer) {
 
       try {
         const result = await dataRetentionJob('manual');
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
+     * Manually trigger the birthday reminders (sends only what is due today
+     * and not yet sent, so it is safe to run at any time)
+     */
+    async 'cronJobs.triggerBirthdayReminders'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || currentUser.role !== 'superadmin') {
+        throw new Meteor.Error('access-denied', 'Superadmin privileges required');
+      }
+
+      console.log(`[MANUAL] Birthday Reminders triggered by user ${currentUser._id}`);
+
+      try {
+        const result = await birthdayRemindersJob('manual');
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);

@@ -30,6 +30,7 @@ import MarketTicker from './MarketTicker.jsx';
 import GlobalIsinCopy from './components/GlobalIsinCopy.jsx';
 import { setPendingSizeableReviewId } from './components/compliance/SizeableTransactionsModal.jsx';
 import { setPendingMeetingReport } from './utils/pendingMeetingReport.js';
+import { setPendingClientFile } from './utils/pendingClientFile.js';
 
 const AppContent = () => {
   const { theme } = useTheme();
@@ -764,6 +765,15 @@ const AppContent = () => {
                       // Requested report delivered: back to the (compliance) dashboard,
                       // where the visit flag has cleared
                       handleSectionChange('dashboard');
+                    } else if (notification.eventType === 'client_birthday') {
+                      // Birthday reminder: open the client's file (a legacy login
+                      // without a contact has none, so the birthday calendar instead)
+                      if (notification.metadata?.entityId) {
+                        setPendingClientFile(notification.metadata.entityId);
+                        handleSectionChange('clients');
+                      } else {
+                        handleSectionChange('intranet');
+                      }
                     }
                   }}
                 />

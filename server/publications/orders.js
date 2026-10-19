@@ -10,16 +10,18 @@ import { check, Match } from 'meteor/check';
 import { OrdersCollection, ORDER_STATUSES } from '/imports/api/orders';
 import { USER_ROLES } from '/imports/api/users';
 import { getSessionUser } from '../helpers/sessionAuth.js';
-import { ORDER_BOOK_ROLES } from '../helpers/accessPolicy.js';
+import { ORDER_BOOK_ROLES, restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import { resolveScope, ordersSelector, IMPOSSIBLE } from '../helpers/accessScope.js';
 
 /**
  * The owner clause for this viewer: `{}` for the order book, the client's own
- * scope for a client, IMPOSSIBLE for everyone else.
+ * scope for a client, IMPOSSIBLE for everyone else. Orders of a client under
+ * GDPR restriction stay visible to compliance only.
  */
 async function viewerOrdersClause(user) {
-  if (ORDER_BOOK_ROLES.includes(user.role)) return {};
-  if (user.role === USER_ROLES.CLIENT) return ordersSelector(await resolveScope(user));
+  const restricted = restrictedRecordsClause(user);
+  if (ORDER_BOOK_ROLES.includes(user.role)) return restricted;
+  if (user.role === USER_ROLES.CLIENT) return { $and: [ordersSelector(await resolveScope(user)), restricted] };
   return { $and: [IMPOSSIBLE] };
 }
 

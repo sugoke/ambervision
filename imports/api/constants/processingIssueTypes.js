@@ -25,15 +25,17 @@ export const PROCESSING_ISSUE_TYPES = {
     category: 'market_data',
     messageTemplate: 'Invalid price value for {ticker}: {value}'
   },
-  // The termsheet strike and the price feed's close on the fixing date disagree, and no
-  // stock split explains the gap — so the feed is probably not the instrument the
-  // termsheet refers to. Left unflagged, every performance, barrier distance and autocall
-  // decision for that underlying is computed off the wrong series.
+  // The termsheet strike and the price feed's close on the fixing date disagree, no stock
+  // split explains the gap, and the underlying's ISIN does not confirm the feed ticker — so
+  // the feed is probably not the instrument the termsheet refers to. Left unflagged, every
+  // performance, barrier distance and autocall decision for that underlying is computed off
+  // the wrong series. (A term sheet that fixes an "agreed" initial price away from the market
+  // is not flagged when its ISIN proves the feed; a missing or wrong ISIN leaves it flagged.)
   STRIKE_FEED_MISMATCH: {
     code: 'STRIKE_FEED_MISMATCH',
     severity: 'warning',
     category: 'market_data',
-    messageTemplate: 'Termsheet strike {strike} for {ticker} disagrees with the feed close {close} on the fixing date {date} ({pct}) and no split explains it — verify the ticker'
+    messageTemplate: 'Termsheet strike {strike} for {ticker} disagrees with the feed close {close} on the fixing date {date} ({pct}) and no split explains it — verify the ticker, or add the underlying\'s ISIN if the term sheet sets an agreed off-market initial price'
   },
 
   // Evaluation Issues

@@ -9,7 +9,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { ClientDocumentsCollection } from '/imports/api/clientDocuments.js';
 import { getSessionUser } from '../helpers/sessionAuth.js';
-import { isStaff } from '../helpers/accessPolicy.js';
+import { isStaff, restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import { resolveScope, isClientInScope, usersSelector, bankAccountsSelector } from '../helpers/accessScope.js';
 
 /** Documents of one client (entity id or legacy user id). */
@@ -29,7 +29,8 @@ Meteor.publish('clientDocuments', async function (userId, sessionId) {
     if (!(await isClientInScope(scope, userId))) return this.ready();
   }
 
-  return ClientDocumentsCollection.find({ userId });
+  // Documents under GDPR restriction stay visible to compliance only
+  return ClientDocumentsCollection.find({ $and: [{ userId }, restrictedRecordsClause(user)] });
 });
 
 /** Documents in scope expiring within three months (dashboard alerts) — staff only. */
@@ -47,7 +48,7 @@ Meteor.publish('clientDocuments.expiring', async function (sessionId) {
   const owner = scope.isAdmin
     ? {}
     : { $or: [await usersSelector(scope), { userId: { $in: scope.entityIds } }, bankAccountsSelector(scope)] };
-  return ClientDocumentsCollection.find({ $and: [owner, { expirationDate: { $lte: threeMonthsFromNow } }] });
+  return ClientDocumentsCollection.find({ $and: [owner, { expirationDate: { $lte: threeMonthsFromNow } }, restrictedRecordsClause(user)] });
 });
 
 /** Documents of several clients — each must be in scope. */
@@ -67,5 +68,5 @@ Meteor.publish('clientDocuments.forUsers', async function (userIds, sessionId) {
     if (await isClientInScope(scope, id)) allowed.push(id);
   }
   if (allowed.length === 0) return this.ready();
-  return ClientDocumentsCollection.find({ userId: { $in: allowed } });
+  return ClientDocumentsCollection.find({ $and: [{ userId: { $in: allowed } }, restrictedRecordsClause(user)] });
 });

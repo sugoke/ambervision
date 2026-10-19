@@ -114,6 +114,13 @@ async function getUserScope(user) {
 
 async function ensureCanReadReport(user, report) {
   if (!report) throw new Meteor.Error('not-found', 'Meeting report not found');
+  // A report of a client under GDPR restriction is readable by compliance only
+  if (report.gdprRestricted) {
+    const { canSeeRestrictedRecords } = await import('/server/helpers/accessPolicy.js');
+    if (!canSeeRestrictedRecords(user)) {
+      throw new Meteor.Error('not-authorized', 'This report belongs to a client file under restricted processing');
+    }
+  }
   if (isAdmin(user)) return;
   const { entityIds, bankAccountIds } = await getUserScope(user);
   const linkedToScope =
@@ -544,6 +551,11 @@ if (Meteor.isServer) {
     /**
      * Soft-delete: marks status='deleted'. Authors can delete their own drafts;
      * admins can delete anything.
+     *
+     * The rendered PDF is deliberately left on disk: a finalized report is part
+     * of the client file, which the firm keeps for the regulatory retention
+     * period (server/helpers/retentionPolicy.js). Only the retention sweep
+     * destroys it, once that period has run out.
      */
     async 'meetingReports.delete'(sessionId, meetingReportId) {
       check(sessionId, String);

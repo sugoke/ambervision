@@ -100,7 +100,9 @@ const CronJobsDashboard = ({ user }) => {
       'bankFileSync': 'Bank File Sync',
       'marketTickerUpdate': 'Market Ticker Update',
       'priceTrackerScrape': 'Price Tracker Scrape',
-      'settlementCheck': 'Settlement Check'
+      'settlementCheck': 'Settlement Check',
+      'dataRetention': 'Data Retention',
+      'birthdayReminders': 'Birthday Reminders'
     };
     return names[jobName] || jobName;
   };
@@ -139,7 +141,9 @@ const CronJobsDashboard = ({ user }) => {
         bankFileSync: 'cronJobs.triggerBankFileSync',
         marketTickerUpdate: 'cronJobs.triggerMarketTickerUpdate',
         priceTrackerScrape: 'cronJobs.triggerPriceTrackerScrape',
-        settlementCheck: 'cronJobs.triggerSettlementCheck'
+        settlementCheck: 'cronJobs.triggerSettlementCheck',
+        dataRetention: 'cronJobs.triggerDataRetention',
+        birthdayReminders: 'cronJobs.triggerBirthdayReminders'
       };
       const methodName = methodMap[jobName];
       if (!methodName) {
@@ -305,6 +309,8 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'bankFileSync' ? '🏦 Bank File Sync' :
                      job.name === 'priceTrackerScrape' ? '🔍 Price Tracker Scrape' :
                      job.name === 'settlementCheck' ? '✅ Settlement Check' :
+                     job.name === 'dataRetention' ? '🗂️ Data Retention' :
+                     job.name === 'birthdayReminders' ? '🎂 Birthday Reminders' :
                      '📈 Market Ticker Update'}
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -313,6 +319,8 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'bankFileSync' ? 'Downloads & processes bank files' :
                      job.name === 'priceTrackerScrape' ? 'Scrapes manually tracked securities' :
                      job.name === 'settlementCheck' ? 'Reconciles executed orders against PMS operations' :
+                     job.name === 'dataRetention' ? 'Purges expired logs and leads; destroys client files past retention' :
+                     job.name === 'birthdayReminders' ? 'Reminds RMs of their clients\' birthdays, a week ahead and on the day' :
                      'Updates ticker prices'}
                   </p>
                 </div>

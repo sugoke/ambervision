@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import * as XLSX from 'xlsx';
@@ -18,6 +19,8 @@ import UnlinkedProductsBlotter from './components/UnlinkedProductsBlotter.jsx';
  */
 const ProcessingIssueIndicator = ({ product }) => {
   const [showTooltip, setShowTooltip] = useState(false);
+  const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 });
+  const iconRef = useRef(null);
 
   const { processingStatus, processingIssues, hasProcessingErrors, hasProcessingWarnings } = product;
 
@@ -37,8 +40,18 @@ const ProcessingIssueIndicator = ({ product }) => {
 
   return (
     <div
+      ref={iconRef}
       style={{ position: 'relative', display: 'inline-flex', marginLeft: '6px' }}
-      onMouseEnter={() => setShowTooltip(true)}
+      onMouseEnter={() => {
+        // Anchor the tooltip to the icon in viewport coordinates: it is rendered in a
+        // portal on document.body so neighbouring rows (which get their own stacking
+        // context on hover) and the table's overflow:hidden cannot cover or clip it.
+        const rect = iconRef.current?.getBoundingClientRect();
+        if (rect) {
+          setTooltipPos({ top: rect.bottom + 8, left: rect.left + rect.width / 2 });
+        }
+        setShowTooltip(true);
+      }}
       onMouseLeave={() => setShowTooltip(false)}
     >
       {/* Warning Icon */}
@@ -83,21 +96,20 @@ const ProcessingIssueIndicator = ({ product }) => {
         </svg>
       </div>
 
-      {/* Tooltip */}
-      {showTooltip && (
+      {/* Tooltip (portalled to body so it always sits above the table) */}
+      {showTooltip && createPortal(
         <div
           style={{
-            position: 'absolute',
-            top: '100%',
-            left: '50%',
+            position: 'fixed',
+            top: `${tooltipPos.top}px`,
+            left: `${tooltipPos.left}px`,
             transform: 'translateX(-50%)',
-            marginTop: '8px',
             padding: '10px 12px',
             background: 'var(--bg-primary)',
             border: '1px solid var(--border-color)',
             borderRadius: '8px',
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
-            zIndex: 1000,
+            zIndex: 10000,
             minWidth: '220px',
             maxWidth: '300px',
             whiteSpace: 'normal'
@@ -135,7 +147,8 @@ const ProcessingIssueIndicator = ({ product }) => {
               </li>
             )}
           </ul>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

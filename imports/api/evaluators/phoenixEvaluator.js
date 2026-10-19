@@ -371,6 +371,21 @@ export const PhoenixEvaluator = {
     }
   },
 
+  /**
+   * True when the feed ticker is a listing of the underlying's ISIN, false when
+   * the ISIN lists elsewhere, null when it cannot be checked (no ISIN, lookup
+   * failed). A failed check is reported as unknown, never as a match.
+   */
+  async feedConfirmedByIsin(fullTicker, isin) {
+    try {
+      const { EODApiHelpers } = await import('/imports/api/eodApi.js');
+      return await EODApiHelpers.tickerMatchesIsin(fullTicker, isin);
+    } catch (error) {
+      console.warn(`⚠️ Phoenix: Could not check ${fullTicker} against ISIN ${isin}: ${error.message}`);
+      return null;
+    }
+  },
+
   async getPriceAtDate(ticker, targetDate, tradeDate, { exactOnly = false } = {}) {
     try {
       const targetDateStr = new Date(targetDate).toISOString().split('T')[0];
@@ -573,10 +588,20 @@ export const PhoenixEvaluator = {
         if (splits.length > 0) {
           console.error(`❌ Phoenix: ${fullTicker} has splits (cumulative ${cumulativeSplitRatio.toFixed(4)}) but they do not account for the ${gapPct} gap.`);
         }
-        // No split explains the gap, so the feed is suspect, not the term sheet. Keep the
-        // strike — a wrong basis silently changes autocall and barrier verdicts, whereas a
-        // flagged mismatch is visible and correctable.
-        console.error(`❌ Phoenix: ${fullTicker} strike ${strike} disagrees with feed close ${closeOnTradeDate} on ${tradeDate.toISOString().split('T')[0]} (${gapPct}) and no split explains it. Keeping the term sheet strike and flagging the product.`);
+        // A term sheet may fix the initial price away from the market ("Share Initial is the
+        // agreed price on the Strike Date" — XS3524899567 sets Partners Group at 810 against a
+        // 594.6 close). The level alone cannot tell that from a wrong feed; the ISIN can. When
+        // the feed ticker is a listing of the underlying's ISIN, the instrument is proven and
+        // the gap is contractual, so the strike stands without a flag.
+        const isinConfirmed = await this.feedConfirmedByIsin(fullTicker, u.isin);
+        if (isinConfirmed === true) {
+          console.log(`📊 Phoenix: ${fullTicker} strike ${strike} sits ${gapPct} from the close ${closeOnTradeDate} on ${tradeDate.toISOString().split('T')[0]}, but the feed is listed under ISIN ${u.isin} — agreed off-market initial price, keeping the strike.`);
+          continue;
+        }
+        // No split explains the gap and the ISIN does not vouch for the feed, so the feed is
+        // suspect, not the term sheet. Keep the strike — a wrong basis silently changes
+        // autocall and barrier verdicts, whereas a flagged mismatch is visible and correctable.
+        console.error(`❌ Phoenix: ${fullTicker} strike ${strike} disagrees with feed close ${closeOnTradeDate} on ${tradeDate.toISOString().split('T')[0]} (${gapPct}), no split explains it and the ISIN ${isinConfirmed === false ? 'lists elsewhere' : 'could not be checked'}. Keeping the term sheet strike and flagging the product.`);
         issueCollector?.addIssue('STRIKE_FEED_MISMATCH', {
           ticker: fullTicker,
           underlying: u.ticker,

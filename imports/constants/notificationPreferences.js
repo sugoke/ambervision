@@ -82,6 +82,19 @@ export const NOTIFICATION_PREFERENCE_GROUPS = [
     ]
   },
   {
+    id: 'clients',
+    label: 'Clients',
+    description: 'Reminders about the clients linked to you.',
+    preferences: [
+      {
+        key: 'client_birthday',
+        label: 'Client birthdays',
+        eventTypes: ['client_birthday'],
+        hint: 'A week ahead and on the day, for your clients and their family members'
+      }
+    ]
+  },
+  {
     id: 'system',
     label: 'System',
     description: 'Other operational alerts (bank file structure changes, pending modifications, ...).',

@@ -1,6 +1,11 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
+import { Random } from 'meteor/random';
+import fs from 'fs';
+import path from 'path';
 import { SessionHelpers } from '../../imports/api/sessions.js';
+import { issueDocumentToken } from '../documentAccess.js';
+import { getSizeableEvidenceDir } from '../../imports/api/documentStorage.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '../../imports/api/clientEntities.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
@@ -61,6 +66,35 @@ let lastScanAt = 0;
 
 const MAX_TEXT_LENGTH = 4000;
 
+// ── Supporting documents (evidence attached to a review) ──
+//
+// Same allowlist discipline as client documents: the stored extension comes
+// from this list, never from the client's filename, and extension and MIME
+// must agree. Files live under <fichier_central>/sizeable/<reviewId>/ and are
+// served by the /sizeable_evidence handler behind a capability token.
+const EVIDENCE_WORD_EXTENSIONS = new Set(['.doc', '.docx']);
+const EVIDENCE_EXTENSIONS = new Set([
+  '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.tif', '.tiff',
+  ...EVIDENCE_WORD_EXTENSIONS
+]);
+const EVIDENCE_MIME_PREFIXES = ['image/', 'application/pdf'];
+const EVIDENCE_WORD_MIMES = new Set([
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+]);
+const MAX_EVIDENCE_BYTES = 25 * 1024 * 1024; // 25 MB
+const MAX_EVIDENCE_PER_REVIEW = 30;
+const SIZEABLE_EVIDENCE_URL_PREFIX = '/sizeable_evidence';
+
+// Review ids are Meteor Random ids; stored filenames are built server-side
+const isSafePathSegment = (value) => typeof value === 'string' && /^[A-Za-z0-9_.-]+$/.test(value) && !value.includes('..');
+
+const formatSize = (bytes) => {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
 // ── Formatting (the UI only displays these strings) ──
 
 const formatEUR = (value) => `EUR ${Math.round(value).toLocaleString('en-GB')}`;
@@ -101,6 +135,42 @@ async function validateSession(sessionId, allowedRoles) {
     throw new Meteor.Error('not-authorized', 'You are not allowed to access sizeable transactions');
   }
   return user;
+}
+
+const isCompliance = (user) => COMPLIANCE_ROLES.includes(user.role);
+
+/**
+ * Who may see and corroborate a review: compliance, admins, and the RMs the
+ * account is assigned to. Same perimeter as the answer method.
+ */
+const canAccessReview = (user, review) =>
+  isCompliance(user)
+  || [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN].includes(user.role)
+  || (review.rmIds || []).includes(user._id);
+
+/** Compliance owns the file; an RM's window closes with the review. */
+const canEditEvidence = (user, review) =>
+  canAccessReview(user, review) && (isCompliance(user) || review.status !== SIZEABLE_STATUSES.DONE);
+
+async function loadReviewFor(user, reviewId) {
+  const review = await SizeableTransactionReviewsCollection.findOneAsync(reviewId);
+  if (!review) throw new Meteor.Error('not-found', 'Review not found');
+  if (!canAccessReview(user, review)) {
+    throw new Meteor.Error('not-authorized', 'You are not the relationship manager of this account');
+  }
+  return review;
+}
+
+/** <fichier_central>/sizeable/<reviewId>, created on first write, never outside the root. */
+function evidenceDirFor(reviewId) {
+  if (!isSafePathSegment(reviewId)) throw new Meteor.Error('invalid-argument', 'Invalid review id');
+  const base = path.resolve(getSizeableEvidenceDir());
+  const dir = path.resolve(path.join(base, reviewId));
+  if (dir !== base && !dir.startsWith(base + path.sep)) {
+    throw new Meteor.Error('invalid-argument', 'Resolved path escapes storage root');
+  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 // ── Detection ──
@@ -304,11 +374,16 @@ export async function scanSizeableTransactions({ force = false } = {}) {
 
 // ── Display rows ──
 
-async function toRows(reviews) {
+/**
+ * Display rows. `viewer` (the user the rows are returned to) decides which
+ * attached documents they may remove, so the UI only reads a flag.
+ */
+async function toRows(reviews, viewer = null) {
   const userIds = new Set();
   reviews.forEach(r => {
     (r.rmIds || []).forEach(id => userIds.add(id));
     (r.thread || []).forEach(t => t.byUserId && userIds.add(t.byUserId));
+    (r.documents || []).forEach(d => d.uploadedBy && userIds.add(d.uploadedBy));
   });
   const users = await UsersCollection.find(
     { _id: { $in: [...userIds] } },
@@ -353,7 +428,22 @@ async function toRows(reviews) {
       closedText: r.status === SIZEABLE_STATUSES.DONE && r.closedAt
         ? `Closed by ${r.closedByName || ''} on ${formatDateTime(r.closedAt)}`
         : '',
-      closingNote: r.closingNote || ''
+      closingNote: r.closingNote || '',
+      documents: (r.documents || []).map(d => ({
+        _id: d._id,
+        fileName: d.fileName,
+        metaText: [
+          d.role === 'compliance' ? 'Compliance' : 'RM',
+          d.uploadedByName || nameById[d.uploadedBy] || '',
+          formatDateTime(d.uploadedAt),
+          formatSize(d.fileSize)
+        ].filter(Boolean).join(' · '),
+        canRemove: !!viewer && canEditEvidence(viewer, r) && (isCompliance(viewer) || d.uploadedBy === viewer._id)
+      })),
+      documentCountText: (r.documents || []).length
+        ? `${r.documents.length} document${r.documents.length > 1 ? 's' : ''}`
+        : '',
+      canAttach: !!viewer && canEditEvidence(viewer, r)
     };
   });
 }
@@ -398,7 +488,7 @@ Meteor.methods({
     check(status, String);
     check(period, Match.Maybe(String));
     check(sessionId, String);
-    await validateSession(sessionId, COMPLIANCE_ROLES);
+    const user = await validateSession(sessionId, COMPLIANCE_ROLES);
 
     try {
       await scanSizeableTransactions();
@@ -417,7 +507,7 @@ Meteor.methods({
       .map(p => ({ value: p, label: formatPeriod(p) }));
 
     return {
-      rows: await toRows(reviews),
+      rows: await toRows(reviews, user),
       counts: await statusCounts(),
       periods,
       rulesText: `Single movement ≥ ${formatEUR(SIZEABLE_SINGLE_THRESHOLD_EUR)} · Monthly total per account and direction ≥ ${formatEUR(SIZEABLE_MONTHLY_THRESHOLD_EUR)} · since ${formatDate(scanStartDate())}`
@@ -486,7 +576,7 @@ Meteor.methods({
 
     const order = { [SIZEABLE_STATUSES.QUESTIONED]: 0, [SIZEABLE_STATUSES.ANSWERED]: 1, [SIZEABLE_STATUSES.DONE]: 2 };
     reviews.sort((a, b) => (order[a.status] - order[b.status]) || sortReviews(a, b));
-    const rows = await toRows(reviews);
+    const rows = await toRows(reviews, user);
     return {
       rows,
       toAnswerCount: rows.filter(r => r.status === SIZEABLE_STATUSES.QUESTIONED).length
@@ -573,5 +663,152 @@ Meteor.methods({
       targetType: 'sizeableTransaction', targetId: reviewId, meta: { fromStatus: review.status }
     });
     return { ok: true };
+  },
+
+  /**
+   * Compliance or the account's RM: attach a supporting document (bank
+   * instruction, invoice, contract, source-of-funds letter…) to a review.
+   * An RM's attachment counts as (part of) their answer: a questioned review
+   * moves to "RM answered" and the compliance officers who asked are notified.
+   */
+  async 'sizeableTransactions.attachDocument'({ reviewId, fileName, base64Data, mimeType }, sessionId) {
+    check(reviewId, String);
+    check(fileName, String);
+    check(base64Data, String);
+    check(mimeType, String);
+    check(sessionId, String);
+    const user = await validateSession(sessionId, [...new Set([...COMPLIANCE_ROLES, ...RM_ROLES])]);
+    const review = await loadReviewFor(user, reviewId);
+    if (!canEditEvidence(user, review)) throw new Meteor.Error('invalid', 'This review is already closed');
+    if ((review.documents || []).length >= MAX_EVIDENCE_PER_REVIEW) {
+      throw new Meteor.Error('invalid', `At most ${MAX_EVIDENCE_PER_REVIEW} documents per review`);
+    }
+
+    const ext = (path.extname(fileName) || '').toLowerCase();
+    if (!EVIDENCE_EXTENSIONS.has(ext)) {
+      throw new Meteor.Error('invalid-argument', `Unsupported file type: ${ext || '(none)'} — PDF, Word or image`);
+    }
+    const mimeAllowed = EVIDENCE_MIME_PREFIXES.some(p => mimeType.startsWith(p)) || EVIDENCE_WORD_MIMES.has(mimeType);
+    if (!mimeAllowed || EVIDENCE_WORD_EXTENSIONS.has(ext) !== EVIDENCE_WORD_MIMES.has(mimeType)) {
+      throw new Meteor.Error('invalid-argument', `File type ${ext} does not match its content type`);
+    }
+    const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.length === 0 || buffer.length > MAX_EVIDENCE_BYTES) {
+      throw new Meteor.Error('invalid-argument', 'File is empty or exceeds the 25 MB limit');
+    }
+
+    const storedFileName = `${Date.now()}_${Random.id(8)}${ext}`;
+    const dir = evidenceDirFor(reviewId);
+    try {
+      fs.writeFileSync(path.join(dir, storedFileName), buffer);
+    } catch (error) {
+      console.error('[SizeableTransactions] Could not store evidence:', error);
+      throw new Meteor.Error('file-system-error', 'Failed to save the document');
+    }
+
+    const role = isCompliance(user) ? 'compliance' : 'rm';
+    const cleanName = cleanText(fileName).slice(0, 200) || storedFileName;
+    const document = {
+      _id: Random.id(),
+      fileName: cleanName,
+      storedFileName,
+      mimeType,
+      fileSize: buffer.length,
+      uploadedAt: new Date(),
+      uploadedBy: user._id,
+      uploadedByName: userName(user),
+      role
+    };
+
+    const modifier = {
+      $set: { updatedAt: new Date() },
+      $push: {
+        documents: document,
+        thread: { at: new Date(), byUserId: user._id, byName: userName(user), role, text: `Attached document: ${cleanName}` }
+      }
+    };
+    const rmAnswers = role === 'rm' && review.status === SIZEABLE_STATUSES.QUESTIONED;
+    if (rmAnswers) modifier.$set.status = SIZEABLE_STATUSES.ANSWERED;
+    await SizeableTransactionReviewsCollection.updateAsync(reviewId, modifier);
+
+    if (role === 'rm') {
+      const askers = [...new Set((review.thread || []).filter(t => t.role === 'compliance' && t.byUserId).map(t => t.byUserId))];
+      for (const complianceId of askers) {
+        await NotificationHelpers.create({
+          userId: complianceId,
+          type: 'info',
+          eventType: EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED,
+          title: `RM attached a document — ${reviewTitle(review)}`,
+          message: `${userName(user)} attached "${cleanName}"`,
+          metadata: { sizeableReviewId: reviewId, entityId: review.entityId || null, bankAccountId: review.bankAccountId || null }
+        });
+      }
+    }
+
+    await AuditLog.record({
+      actorUserId: user._id, actorRole: user.role, action: 'sizeableTransaction.attachDocument',
+      targetType: 'sizeableTransaction', targetId: reviewId,
+      meta: { documentId: document._id, fileName: cleanName, fileSize: buffer.length }
+    });
+    return { ok: true, documentId: document._id };
+  },
+
+  /**
+   * Remove an attached document: compliance at any time, an RM their own
+   * uploads while the review is open. The file is deleted from disk and the
+   * removal is kept in the conversation.
+   */
+  async 'sizeableTransactions.removeDocument'({ reviewId, documentId }, sessionId) {
+    check(reviewId, String);
+    check(documentId, String);
+    check(sessionId, String);
+    const user = await validateSession(sessionId, [...new Set([...COMPLIANCE_ROLES, ...RM_ROLES])]);
+    const review = await loadReviewFor(user, reviewId);
+    const document = (review.documents || []).find(d => d._id === documentId);
+    if (!document) throw new Meteor.Error('not-found', 'Document not found');
+    if (!canEditEvidence(user, review)) throw new Meteor.Error('invalid', 'This review is already closed');
+    if (!isCompliance(user) && document.uploadedBy !== user._id) {
+      throw new Meteor.Error('not-authorized', 'You can only remove documents you attached');
+    }
+
+    if (isSafePathSegment(document.storedFileName)) {
+      try {
+        const filePath = path.join(evidenceDirFor(reviewId), document.storedFileName);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (error) {
+        console.error('[SizeableTransactions] Could not delete evidence file:', error.message);
+      }
+    }
+
+    const role = isCompliance(user) ? 'compliance' : 'rm';
+    await SizeableTransactionReviewsCollection.updateAsync(reviewId, {
+      $set: { updatedAt: new Date() },
+      $pull: { documents: { _id: documentId } },
+      $push: { thread: { at: new Date(), byUserId: user._id, byName: userName(user), role, text: `Removed document: ${document.fileName}` } }
+    });
+
+    await AuditLog.record({
+      actorUserId: user._id, actorRole: user.role, action: 'sizeableTransaction.removeDocument',
+      targetType: 'sizeableTransaction', targetId: reviewId, meta: { documentId, fileName: document.fileName }
+    });
+    return { ok: true };
+  },
+
+  /**
+   * Short-lived download URL for an attached document (compliance, admins and
+   * the account's RMs). The /sizeable_evidence endpoint requires the token.
+   */
+  async 'sizeableTransactions.getDocumentUrl'({ reviewId, documentId }, sessionId) {
+    check(reviewId, String);
+    check(documentId, String);
+    check(sessionId, String);
+    const user = await validateSession(sessionId, [...new Set([...COMPLIANCE_ROLES, ...RM_ROLES])]);
+    const review = await loadReviewFor(user, reviewId);
+    const document = (review.documents || []).find(d => d._id === documentId);
+    if (!document) throw new Meteor.Error('not-found', 'Document not found');
+
+    const filePath = `${SIZEABLE_EVIDENCE_URL_PREFIX}/${reviewId}/${document.storedFileName}`;
+    const token = await issueDocumentToken(filePath, user._id);
+    return `${filePath}?dl=${token}`;
   }
 });

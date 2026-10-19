@@ -8,7 +8,7 @@ import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { BankAccountsCollection, BANK_ACCOUNT_LIST_FIELDS } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { getSessionUser } from '../helpers/sessionAuth.js';
-import { isStaff } from '../helpers/accessPolicy.js';
+import { isStaff, restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import { resolveScope, usersSelector, entitiesSelector, bankAccountsSelector } from '../helpers/accessScope.js';
 
 const CLIENT_FIELDS = { email: 1, username: 1, role: 1, profile: 1, relationshipManagerId: 1 };
@@ -62,7 +62,7 @@ Meteor.publish('entities.forViewAs', async function(sessionId = null) {
   if (scope.denied) return this.ready();
 
   return ClientEntitiesCollection.find(
-    { $and: [entitiesSelector(scope), { isActive: true }] },
+    { $and: [entitiesSelector(scope), { isActive: true }, restrictedRecordsClause(user)] },
     { fields: ENTITY_FIELDS, sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 } }
   );
 });

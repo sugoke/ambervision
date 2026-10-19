@@ -10,6 +10,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { getSessionUser } from '../helpers/sessionAuth.js';
+import { restrictedRecordsClause } from '../helpers/accessPolicy.js';
 import { resolveScope, entitiesSelector, isEntityInScope } from '../helpers/accessScope.js';
 
 const EXCLUDE_DEMO = { isDemo: { $ne: true } };
@@ -38,7 +39,7 @@ Meteor.publish('clientEntities', async function (sessionId) {
   if (scope.denied) return this.ready();
 
   return ClientEntitiesCollection.find(
-    { $and: [entitiesSelector(scope), { isActive: true }, EXCLUDE_DEMO] },
+    { $and: [entitiesSelector(scope), { isActive: true }, EXCLUDE_DEMO, restrictedRecordsClause(user)] },
     LIST_FIELDS
   );
 });
@@ -55,5 +56,6 @@ Meteor.publish('clientEntities.details', async function (sessionId, entityId) {
   const scope = await resolveScope(user);
   if (!(await isEntityInScope(scope, entityId))) return this.ready();
 
-  return ClientEntitiesCollection.find({ _id: entityId });
+  // An entity under GDPR restriction is readable by compliance only
+  return ClientEntitiesCollection.find({ $and: [{ _id: entityId }, restrictedRecordsClause(user)] });
 });

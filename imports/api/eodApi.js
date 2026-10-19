@@ -954,19 +954,49 @@ export const EODApiHelpers = {
    */
   async resolveUsOptionsSymbol({ ticker, isin } = {}) {
     if (ticker && /\.US$/i.test(ticker)) return ticker.toUpperCase();
+    const rows = await this.findListingsByIsin(isin);
+    if (!rows) return null;
+    const us = rows.find(r => r.Exchange === 'US' && String(r.ISIN || '').toUpperCase() === isin.toUpperCase())
+      || rows.find(r => r.Exchange === 'US');
+    return us ? `${us.Code}.US` : null;
+  },
+
+  /**
+   * Every EOD listing carrying an ISIN, as the search endpoint returns them
+   * ({ Code, Exchange, ISIN, Name, ... }). Null when the ISIN is malformed or
+   * the lookup fails, so callers can tell "no listing" from "could not check".
+   */
+  async findListingsByIsin(isin) {
     if (!isin || !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/i.test(isin)) return null;
     try {
       const response = await HTTP.get(`${EOD_BASE_URL}/search/${encodeURIComponent(isin)}`, {
-        params: { api_token: EOD_API_TOKEN, limit: 20, fmt: 'json' }
+        params: { api_token: EOD_API_TOKEN, limit: 50, fmt: 'json' }
       });
-      const rows = Array.isArray(response.data) ? response.data : [];
-      const us = rows.find(r => r.Exchange === 'US' && String(r.ISIN || '').toUpperCase() === isin.toUpperCase())
-        || rows.find(r => r.Exchange === 'US');
-      return us ? `${us.Code}.US` : null;
+      return Array.isArray(response.data) ? response.data : [];
     } catch (err) {
-      console.warn('[EOD] resolveUsOptionsSymbol failed:', err.message);
+      console.warn(`[EOD] findListingsByIsin failed for ${isin}:`, err.message);
       return null;
     }
+  },
+
+  /**
+   * Whether a feed ticker (e.g. "PGHN.SW") is a listing of the given ISIN. Used
+   * to prove a price series is the instrument a term sheet names when its level
+   * cannot: a term sheet may fix an "agreed" initial price away from the market
+   * close, and the ISIN is the only fact that tells that apart from a stale or
+   * reused ticker. Null when it cannot be checked (no ISIN, lookup failed).
+   */
+  async tickerMatchesIsin(fullTicker, isin) {
+    if (!fullTicker) return null;
+    const rows = await this.findListingsByIsin(isin);
+    if (!rows) return null;
+    const [code, exchange] = String(fullTicker).toUpperCase().split('.');
+    const wanted = this.normalizeExchangeCode(exchange || 'US');
+    return rows.some(r =>
+      String(r.Code || '').toUpperCase() === code
+      && this.normalizeExchangeCode(String(r.Exchange || '')) === wanted
+      && String(r.ISIN || '').toUpperCase() === String(isin).toUpperCase()
+    );
   },
 
   /**

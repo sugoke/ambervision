@@ -10,8 +10,8 @@
  * - No passphrase prompts (use pinentry-mode loopback or pre-cached passphrase)
  *
  * Production environment:
- * - User: michael
- * - Keyring: /home/michael/.gnupg/
+ * - The app runs as root inside the container; the keyring it reads is
+ *   /root/.gnupg, mounted from /home/michael/.gnupg on the host (deploy/mup.js)
  * - Key: Amberlake Partners SG <mf@amberlakepartners.com>
  */
 

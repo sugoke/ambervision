@@ -73,7 +73,9 @@ export const EVENT_TYPES = {
   COMPLIANCE_QUERY_ANSWERED: 'compliance_query_answered',
   // Compliance asks an RM for a client visit / meeting report
   VISIT_REPORT_REQUESTED: 'visit_report_requested',
-  VISIT_REPORT_DELIVERED: 'visit_report_delivered'
+  VISIT_REPORT_DELIVERED: 'visit_report_delivered',
+  // Daily reminder to an RM: a client (or a client's family member) has a birthday
+  CLIENT_BIRTHDAY: 'client_birthday'
 };
 
 // Event type display names
@@ -103,7 +105,8 @@ export const EVENT_TYPE_NAMES = {
   [EVENT_TYPES.COMPLIANCE_QUERY]: 'Compliance Question',
   [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 'Compliance Question Answered',
   [EVENT_TYPES.VISIT_REPORT_REQUESTED]: 'Visit Report Requested',
-  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 'Visit Report Delivered'
+  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 'Visit Report Delivered',
+  [EVENT_TYPES.CLIENT_BIRTHDAY]: 'Client Birthday'
 };
 
 // Event priority levels (for UI display and sorting)
@@ -132,7 +135,8 @@ export const EVENT_PRIORITY = {
   [EVENT_TYPES.COMPLIANCE_QUERY]: 2,
   [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 3,
   [EVENT_TYPES.VISIT_REPORT_REQUESTED]: 2,
-  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 3
+  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 3,
+  [EVENT_TYPES.CLIENT_BIRTHDAY]: 4
 };
 
 if (Meteor.isServer) {
