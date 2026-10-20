@@ -9,6 +9,10 @@ import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapsho
 import { ProductsCollection } from '../../imports/api/products.js';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
+import {
+  launchDemoModelPortfolio, refreshDemoModelPortfolio, resetDemoModelPortfolio, getModelBook,
+  MODEL_PORTFOLIO_CODE, DEFAULT_NOMINAL_EUR
+} from '../helpers/demoModelPortfolio.js';
 
 /**
  * Demo client seeding.
@@ -382,16 +386,20 @@ Meteor.methods({
       );
     }
 
-    // Drop any line from a previous seed that is no longer part of the model portfolio.
+    // Drop any line from a previous seed that is no longer part of this account's
+    // portfolio. Scoped to DEMO-001: the virtual model portfolio (DEMO-MODEL,
+    // server/helpers/demoModelPortfolio.js) is also isDemo and lives its own life.
     await PMSHoldingsCollection.removeAsync({
       isDemo: true,
+      portfolioCode: DEMO_PORTFOLIO_CODE,
       uniqueKey: { $nin: docs.map(d => d.uniqueKey) }
     });
 
-    // 5. Allocations onto the real catalog products.
+    // 5. Allocations onto the real catalog products (keyed per account: the model
+    //    portfolio may hold the same product on its own account).
     for (const { product, line } of structured) {
       await AllocationsCollection.upsertAsync(
-        { productId: product._id, clientId: DEMO_ENTITY_ID },
+        { productId: product._id, clientId: DEMO_ENTITY_ID, bankAccountId: DEMO_ACCOUNT_ID },
         {
           $set: {
             isDemo: true,
@@ -446,6 +454,7 @@ Meteor.methods({
     await validateSuperadminSession(sessionId);
 
     const removed = {
+      modelPortfolio: await resetDemoModelPortfolio(),
       holdings: await PMSHoldingsCollection.removeAsync({ isDemo: true }),
       allocations: await AllocationsCollection.removeAsync({ isDemo: true }),
       snapshots: await PortfolioSnapshotsCollection.removeAsync({ isDemo: true }),
@@ -456,5 +465,58 @@ Meteor.methods({
 
     console.log('[demo] Reset demo client:', JSON.stringify(removed));
     return removed;
+  },
+
+  /**
+   * Virtual model portfolio on the demo client (account DEMO-MODEL): bought once
+   * at real market prices, revalued daily by the demoModelRefresh cron from the
+   * banks' prices on the same instruments. See server/helpers/demoModelPortfolio.js.
+   */
+  async 'demo.model.launch'(sessionId, nominalEUR = DEFAULT_NOMINAL_EUR) {
+    check(sessionId, String);
+    check(nominalEUR, Number);
+    await validateSuperadminSession(sessionId);
+    if (!(nominalEUR > 0)) throw new Meteor.Error('invalid', 'Nominal must be positive');
+    try {
+      await launchDemoModelPortfolio({ nominalEUR });
+      return await refreshDemoModelPortfolio();
+    } catch (error) {
+      throw new Meteor.Error('demo-model', error.message);
+    }
+  },
+
+  async 'demo.model.refresh'(sessionId) {
+    check(sessionId, String);
+    await validateSuperadminSession(sessionId);
+    try {
+      return await refreshDemoModelPortfolio();
+    } catch (error) {
+      throw new Meteor.Error('demo-model', error.message);
+    }
+  },
+
+  async 'demo.model.status'(sessionId) {
+    check(sessionId, String);
+    await validateSuperadminSession(sessionId);
+    const book = await getModelBook();
+    if (!book) return { launched: false, portfolioCode: MODEL_PORTFOLIO_CODE };
+    return {
+      launched: true,
+      portfolioCode: MODEL_PORTFOLIO_CODE,
+      inceptionDate: book.inceptionDate,
+      nominalEUR: book.nominalEUR,
+      cashEUR: book.cashEUR,
+      positions: book.positions,
+      lastRefreshedAt: book.lastRefreshedAt || null,
+      lastSnapshotDate: book.lastSnapshotDate || null,
+      lastTotalAccountValue: book.lastTotalAccountValue || null,
+      lastStaleIsins: book.lastStaleIsins || []
+    };
+  },
+
+  async 'demo.model.reset'(sessionId) {
+    check(sessionId, String);
+    await validateSuperadminSession(sessionId);
+    return resetDemoModelPortfolio();
   }
 });

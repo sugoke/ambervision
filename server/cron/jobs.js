@@ -124,6 +124,7 @@ let cronJobs = {
   settlementCheck: null,     // Daily settlement reconciliation for executed orders
   dataRetention: null,       // GDPR retention: purge expired logs, leads, sessions, old bank files
   birthdayReminders: null,   // Morning reminders to RMs about their clients' birthdays
+  demoModelRefresh: null,    // Revalues the demo client's virtual model portfolio at the banks' prices
   bankReplyScan: null,       // Outlook: spot bank replies to orders sent via Graph (notifies only)
   limitOrderWatch: null      // Alerts when the market reaches a live limit order's level
 };
@@ -181,6 +182,12 @@ let scheduleInfo = {
   birthdayReminders: {
     name: 'birthdayReminders',
     schedule: '0 7 * * *', // 07:00 CET daily — in the RM's notifications before the day starts
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  demoModelRefresh: {
+    name: 'demoModelRefresh',
+    schedule: '30 10 * * 1-5', // 10:30 CET Mon-Fri — once every bank file of the day is in
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -1937,6 +1944,34 @@ async function birthdayRemindersJob(triggerSource = 'cron') {
 }
 
 /**
+ * JOB 10: Demo Model Portfolio Refresh
+ * Runs at 10:30 CET on weekdays, after the bank files. Revalues the demo
+ * client's virtual model portfolio (1/3 Phoenix, 1/3 capital guaranteed, 1/3
+ * gold / private equity / hedge funds) at the prices the banks report on the
+ * same instruments in real accounts, and writes the day's holdings and snapshot.
+ * Launches the portfolio at the default nominal on its first run.
+ */
+async function demoModelRefreshJob(triggerSource = 'cron') {
+  const logId = await CronJobLogHelpers.startJob('demoModelRefresh', triggerSource);
+  try {
+    const { refreshDemoModelPortfolio } = require('../helpers/demoModelPortfolio.js');
+    const results = await refreshDemoModelPortfolio();
+    await CronJobLogHelpers.completeJob(logId, {
+      ...results,
+      summary: `${results.date}: EUR ${Math.round(results.totalAccountValue).toLocaleString('en-GB')} (${results.performanceSinceInceptionPct}% since inception)${results.stalePrices.length ? `, ${results.stalePrices.length} stale price(s)` : ''}`
+    });
+    scheduleInfo.demoModelRefresh.lastFinishedAt = new Date();
+    scheduleInfo.demoModelRefresh.nextScheduledRun = getNextRunTime(scheduleInfo.demoModelRefresh.schedule);
+    return results;
+  } catch (error) {
+    console.error('[DEMO-MODEL] Job failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    scheduleInfo.demoModelRefresh.lastFinishedAt = new Date();
+    throw error;
+  }
+}
+
+/**
  * JOB 6: Price Tracker Scrape
  * Runs daily at 09:15 CET Mon-Fri
  * Scrapes all active manually-tracked securities and records prices
@@ -2249,6 +2284,21 @@ export async function initializeCronJobs() {
 
   console.log('✓ Birthday Reminders scheduled for 07:00 CET daily');
 
+  // Demo Model Portfolio Refresh — 10:30 CET Mon-Fri
+  cronJobs.demoModelRefresh = cron.schedule(scheduleInfo.demoModelRefresh.schedule, Meteor.bindEnvironment(async () => {
+    console.log('[CRON] Demo Model Refresh CRON trigger fired at:', new Date().toISOString());
+    try {
+      await demoModelRefreshJob();
+    } catch (error) {
+      console.error('[CRON] Demo Model Refresh job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Demo Model Refresh scheduled for 10:30 CET Mon-Fri');
+
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
 }
@@ -2489,6 +2539,28 @@ if (Meteor.isServer) {
 
       try {
         const result = await birthdayRemindersJob('manual');
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
+     * Manually revalue the demo model portfolio (launches it on first run)
+     */
+    async 'cronJobs.triggerDemoModelRefresh'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || currentUser.role !== 'superadmin') {
+        throw new Meteor.Error('access-denied', 'Superadmin privileges required');
+      }
+
+      console.log(`[MANUAL] Demo Model Refresh triggered by user ${currentUser._id}`);
+
+      try {
+        const result = await demoModelRefreshJob('manual');
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);

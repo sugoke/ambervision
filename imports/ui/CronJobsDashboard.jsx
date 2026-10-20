@@ -102,7 +102,8 @@ const CronJobsDashboard = ({ user }) => {
       'priceTrackerScrape': 'Price Tracker Scrape',
       'settlementCheck': 'Settlement Check',
       'dataRetention': 'Data Retention',
-      'birthdayReminders': 'Birthday Reminders'
+      'birthdayReminders': 'Birthday Reminders',
+      'demoModelRefresh': 'Demo Model Portfolio'
     };
     return names[jobName] || jobName;
   };
@@ -143,7 +144,8 @@ const CronJobsDashboard = ({ user }) => {
         priceTrackerScrape: 'cronJobs.triggerPriceTrackerScrape',
         settlementCheck: 'cronJobs.triggerSettlementCheck',
         dataRetention: 'cronJobs.triggerDataRetention',
-        birthdayReminders: 'cronJobs.triggerBirthdayReminders'
+        birthdayReminders: 'cronJobs.triggerBirthdayReminders',
+        demoModelRefresh: 'cronJobs.triggerDemoModelRefresh'
       };
       const methodName = methodMap[jobName];
       if (!methodName) {
@@ -311,6 +313,7 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'settlementCheck' ? '✅ Settlement Check' :
                      job.name === 'dataRetention' ? '🗂️ Data Retention' :
                      job.name === 'birthdayReminders' ? '🎂 Birthday Reminders' :
+                     job.name === 'demoModelRefresh' ? '🧪 Demo Model Portfolio' :
                      '📈 Market Ticker Update'}
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -321,6 +324,7 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'settlementCheck' ? 'Reconciles executed orders against PMS operations' :
                      job.name === 'dataRetention' ? 'Purges expired logs and leads; destroys client files past retention' :
                      job.name === 'birthdayReminders' ? 'Reminds RMs of their clients\' birthdays, a week ahead and on the day' :
+                     job.name === 'demoModelRefresh' ? 'Revalues the demo client\'s virtual model portfolio at the banks\' prices' :
                      'Updates ticker prices'}
                   </p>
                 </div>
