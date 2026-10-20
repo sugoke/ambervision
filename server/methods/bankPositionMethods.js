@@ -1043,6 +1043,27 @@ Meteor.methods({
         // Don't fail the import
       }
 
+      // UNDELIVERED ACCOUNTS: the cleanup above only sees portfolio codes present
+      // in this file. A code the bank stopped sending (account closed, or renumbered
+      // like CMB's 2026 move to ".001" sub-accounts) keeps its last records current
+      // forever and they stay in every cash balance and total. Retire the accounts
+      // this bank has not reported for over a week.
+      try {
+        if (fileDate && processedPortfolioCodes.size > 0) {
+          const retired = await PMSHoldingsHelpers.retireUndeliveredPortfolios({
+            bankId: connection.bankId,
+            fileDate,
+            deliveredCodes: processedPortfolioCodes
+          });
+          if (retired.recordsRetired > 0) {
+            console.warn(`[BANK_POSITIONS] Retired ${retired.portfoliosRetired.length} undelivered portfolio(s): ${retired.portfoliosRetired.join(', ')}`);
+          }
+        }
+      } catch (retireError) {
+        // Never fail an import over this - the file's own positions are already written
+        console.error(`[BANK_POSITIONS] Undelivered-portfolio retirement failed: ${retireError.message}`);
+      }
+
       // LINK NEW POSITIONS TO PRODUCTS: a structured product is normally booked
       // days before the bank reports the position, and auto-allocation only ran
       // at product-creation time — so those positions never got an allocation and

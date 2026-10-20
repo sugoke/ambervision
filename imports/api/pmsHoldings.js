@@ -101,6 +101,66 @@ async function fillDeliveredCostBasis(holdingData) {
 // Helper functions for PMS Holdings management
 export const PMSHoldingsHelpers = {
   /**
+   * Retire the accounts a bank no longer delivers.
+   *
+   * The sold-position cleanup only looks at the portfolio codes present in the
+   * file, so a code the bank stops sending altogether keeps its last records
+   * flagged current forever. CMB did exactly that at the turn of 2026 when it
+   * moved from "303457" to "303457.000/.001/.002": the December 2025 cash lines
+   * of the old codes were still summed into the live cash balances and the total
+   * ten months later (one client: EUR -106k of phantom overdraft, USD +252k of
+   * phantom cash).
+   *
+   * Rule: a current record of this bank whose portfolio code is NOT in the file
+   * just processed, and whose snapshot is more than `gapDays` older than that
+   * file, belongs to an account the bank has stopped reporting. It is retired
+   * (isLatest and isActive cleared) with the reason kept on the record. The gap
+   * protects banks that split their book across several files or skip an
+   * account for a day: only an account missing for over a week is retired, and
+   * it comes back by itself when its next file arrives (new records are written
+   * as current).
+   *
+   * @param {object} params
+   * @param {string} params.bankId
+   * @param {Date}   params.fileDate       snapshot date of the file just processed
+   * @param {Set|Array} params.deliveredCodes portfolio codes present in that file
+   * @param {number} [params.gapDays=7]
+   * @returns {Promise<{portfoliosRetired: string[], recordsRetired: number}>}
+   */
+  async retireUndeliveredPortfolios({ bankId, fileDate, deliveredCodes, gapDays = 7 }) {
+    const delivered = [...(deliveredCodes || [])].filter(Boolean);
+    const date = fileDate instanceof Date ? fileDate : new Date(fileDate);
+    if (!bankId || delivered.length === 0 || Number.isNaN(date.getTime())) {
+      return { portfoliosRetired: [], recordsRetired: 0 };
+    }
+    const cutoff = new Date(date.getTime() - gapDays * 24 * 60 * 60 * 1000);
+
+    const selector = {
+      bankId,
+      isLatest: true,
+      portfolioCode: { $nin: [...delivered, 'CONSOLIDATED', null] },
+      snapshotDate: { $lt: cutoff }
+    };
+    const codes = await PMSHoldingsCollection.rawCollection().distinct('portfolioCode', selector);
+    if (codes.length === 0) return { portfoliosRetired: [], recordsRetired: 0 };
+
+    const now = new Date();
+    const recordsRetired = await PMSHoldingsCollection.updateAsync(selector, {
+      $set: {
+        isLatest: false,
+        isActive: false,
+        retiredAt: now,
+        retiredReason: 'portfolio_not_in_bank_files',
+        retiredByFileDate: date,
+        updatedAt: now
+      }
+    }, { multi: true });
+
+    console.warn(`[PMS] Retired ${recordsRetired} record(s) of ${codes.length} portfolio(s) the bank no longer delivers (last seen before ${cutoff.toISOString().slice(0, 10)}): ${codes.sort().join(', ')}`);
+    return { portfoliosRetired: codes.sort(), recordsRetired };
+  },
+
+  /**
    * Generate unique key for position tracking across time
    * Hash of: bankId + portfolioCode + isin (or currency for cash)
    * For FX forwards: includes endDate (Julius Baer) or reference (CFM) to differentiate contracts

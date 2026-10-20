@@ -23,6 +23,7 @@ import "./productSchedule.test.js";
 import "./termSheetTextChecks.test.js";
 import "./athenaEvaluator.test.js";
 if (Meteor.isServer) require("./birthdayReminders.test.js");
+if (Meteor.isServer) require("./retireUndeliveredPortfolios.test.js");
 
 if (Meteor.isServer) {
   // Never run the isolation suite against a shared cluster: it seeds and removes rows.
