@@ -8,8 +8,10 @@
  *
  *   1/3  Phoenix autocallables
  *   1/3  capital-guaranteed notes (Orion memory notes, 100% participation notes)
- *   1/3  alternatives: NCM Enhanced Physical Gold, KKR Private Markets (K-PRIME),
- *        Haussmann (Notz Stucki fund of hedge funds) — equal thirds
+ *   1/3  alternatives, in equal thirds: gold (NCM Enhanced Physical Gold), private
+ *        equity (KKR Private Markets K-PRIME and Schroders Capital, half each),
+ *        hedge funds (Haussmann and Pendulum from Notz Stucki, GEMS Mahjong China,
+ *        a third each)
  *
  * Every instrument is one the firm's clients really hold, so a reference price
  * is always available: the newest priced record of that ISIN in a real (non-demo)
@@ -88,13 +90,17 @@ export const MODEL_SLEEVES = [
     key: 'alternatives',
     label: 'Gold, private equity, hedge funds',
     weight: 1 / 3,
-    isins: [
-      'CH1139325968', // NCM Alternative Assets — NCM Enhanced Physical Gold (USD)
-      'XD1429691706', // KKR Private Markets Equity Fund — K-PRIME (EUR)
-      'LU1129548993'  // Haussmann SCA SICAV-SIF — Notz Stucki fund of hedge funds (EUR)
+    // Equal thirds between the three groups, equal weights inside a group
+    groups: [
+      { key: 'gold', isins: ['CH1139325968'] },                  // NCM Alternative Assets — NCM Enhanced Physical Gold (USD)
+      { key: 'private_equity', isins: ['XD1429691706', 'LU2098888741'] }, // KKR Private Markets K-PRIME, Schroders Capital Semi-Liquid (EUR)
+      { key: 'hedge_funds', isins: ['LU1129548993', 'LU0722507372', 'LU2306923603'] } // Haussmann (NS fund of funds), Multi Strategy SICAV Pendulum (NS), GEMS Mahjong China — all EUR
     ]
   }
 ];
+
+/** Every ISIN of a sleeve, whether it lists them flat or in groups. */
+export const sleeveIsins = (sleeve) => (sleeve.groups ? sleeve.groups.flatMap(g => g.isins) : sleeve.isins);
 
 const round = (n, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -105,12 +111,19 @@ export function todayUTC(now = new Date()) {
   return new Date(`${iso}T00:00:00Z`);
 }
 
-/** EUR target of every position: sleeve weight × nominal, split equally. */
+/**
+ * EUR target of every position: sleeve weight × nominal, split equally between
+ * the sleeve's groups (or its ISINs when it has none), then inside each group.
+ */
 export function positionTargets(nominalEUR, sleeves = MODEL_SLEEVES) {
   const targets = [];
   for (const sleeve of sleeves) {
-    const perPosition = (nominalEUR * sleeve.weight) / sleeve.isins.length;
-    for (const isin of sleeve.isins) targets.push({ isin, sleeve: sleeve.key, targetEUR: perPosition });
+    const sleeveEUR = nominalEUR * sleeve.weight;
+    const groups = sleeve.groups || [{ key: null, isins: sleeve.isins }];
+    for (const group of groups) {
+      const perPosition = sleeveEUR / groups.length / group.isins.length;
+      for (const isin of group.isins) targets.push({ isin, sleeve: sleeve.key, group: group.key, targetEUR: perPosition });
+    }
   }
   return targets;
 }
@@ -261,7 +274,7 @@ export async function launchDemoModelPortfolio({ nominalEUR = DEFAULT_NOMINAL_EU
     const costEUR = costLocal * ref.eurPerLocal;
     investedEUR += costEUR;
     positions.push({
-      isin: t.isin, sleeve: t.sleeve, targetEUR: round(t.targetEUR),
+      isin: t.isin, sleeve: t.sleeve, group: t.group || null, targetEUR: round(t.targetEUR),
       quantity, costPrice: ref.price, priceType: ref.priceType, currency: ref.currency,
       costEurPerLocal: ref.eurPerLocal, costEUR: round(costEUR), boughtAtPriceDate: ref.priceDate
     });
@@ -274,7 +287,7 @@ export async function launchDemoModelPortfolio({ nominalEUR = DEFAULT_NOMINAL_EU
     inceptionDate,
     positions,
     cashEUR: round(nominalEUR - investedEUR),
-    sleeves: sleeves.map(s => ({ key: s.key, label: s.label, weight: s.weight, isins: s.isins })),
+    sleeves: sleeves.map(s => ({ key: s.key, label: s.label, weight: s.weight, isins: sleeveIsins(s), groups: s.groups || null })),
     createdAt: now,
     updatedAt: now
   };

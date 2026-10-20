@@ -10,7 +10,7 @@ import { AllocationsCollection } from '/imports/api/allocations';
 import {
   positionTargets, sizePosition, pickReferencePrice, todayUTC,
   launchDemoModelPortfolio, refreshDemoModelPortfolio, resetDemoModelPortfolio, getModelBook,
-  MODEL_SLEEVES, MODEL_PORTFOLIO_CODE, MODEL_ACCOUNT_ID, DEMO_ENTITY_ID, DEMO_BANK_ID
+  MODEL_SLEEVES, sleeveIsins, MODEL_PORTFOLIO_CODE, MODEL_ACCOUNT_ID, DEMO_ENTITY_ID, DEMO_BANK_ID
 } from '/server/helpers/demoModelPortfolio.js';
 
 describe('demo model portfolio: sizing and reference prices', function () {
@@ -18,9 +18,15 @@ describe('demo model portfolio: sizing and reference prices', function () {
     const targets = positionTargets(9_000_000);
     const bySleeve = targets.reduce((acc, t) => { acc[t.sleeve] = (acc[t.sleeve] || 0) + t.targetEUR; return acc; }, {});
     for (const s of MODEL_SLEEVES) assert.ok(Math.abs(bySleeve[s.key] - 3_000_000) < 0.01, s.key);
-    assert.strictEqual(targets.length, MODEL_SLEEVES.reduce((n, s) => n + s.isins.length, 0));
-    const alternatives = targets.filter(t => t.sleeve === 'alternatives');
-    assert.ok(alternatives.every(t => Math.abs(t.targetEUR - 1_000_000) < 0.01), 'gold, PE and hedge funds in equal thirds');
+    assert.strictEqual(targets.length, MODEL_SLEEVES.reduce((n, s) => n + sleeveIsins(s).length, 0));
+    const byGroup = targets.filter(t => t.sleeve === 'alternatives').reduce((acc, t) => { acc[t.group] = (acc[t.group] || 0) + t.targetEUR; return acc; }, {});
+    for (const g of ['gold', 'private_equity', 'hedge_funds']) assert.ok(Math.abs(byGroup[g] - 1_000_000) < 0.01, `${g} gets a third of the sleeve`);
+    const pe = targets.filter(t => t.group === 'private_equity');
+    assert.strictEqual(pe.length, 2);
+    assert.ok(pe.every(t => Math.abs(t.targetEUR - 500_000) < 0.01), 'KKR and Schroders share the private equity third');
+    const hf = targets.filter(t => t.group === 'hedge_funds');
+    assert.strictEqual(hf.length, 3);
+    assert.ok(hf.every(t => Math.abs(t.targetEUR - 1_000_000 / 3) < 0.01), 'Haussmann, Pendulum and Mahjong China share the hedge fund third');
   });
 
   it('buys notes in whole denominations rounded down and funds in units, through the EUR factor', function () {
