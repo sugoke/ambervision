@@ -1,4 +1,4 @@
-// The demo client's virtual model portfolio: sized once from the nominal at real
+﻿// The demo client's virtual model portfolio: sized once from the nominal at real
 // prices, revalued daily from the banks' prices on the same instruments.
 import assert from 'assert';
 import { Random } from 'meteor/random';
@@ -23,11 +23,13 @@ describe('demo model portfolio: sizing and reference prices', function () {
     assert.ok(alternatives.every(t => Math.abs(t.targetEUR - 1_000_000) < 0.01), 'gold, PE and hedge funds in equal thirds');
   });
 
-  it('buys notes in whole denominations and funds in units, through the EUR factor', function () {
+  it('buys notes in whole denominations rounded down and funds in units, through the EUR factor', function () {
     assert.strictEqual(sizePosition({ targetEUR: 416_667, price: 1.004, eurPerLocal: 1, priceType: 'percentage' }), 415_000);
     assert.strictEqual(sizePosition({ targetEUR: 416_667, price: 0.98, eurPerLocal: 1, priceType: 'percentage', denomination: 5000 }), 425_000);
+    assert.strictEqual(sizePosition({ targetEUR: 416_667, price: 1.0134, eurPerLocal: 1, priceType: 'percentage' }), 411_000, 'never above the target');
+    assert.ok(sizePosition({ targetEUR: 416_667, price: 1.0134, eurPerLocal: 1, priceType: 'percentage' }) * 1.0134 <= 416_667);
     // USD fund at 262.89 with 1 USD = 0.8915 EUR
-    assert.strictEqual(sizePosition({ targetEUR: 1_111_111, price: 262.89, eurPerLocal: 0.8915, priceType: 'absolute' }), 4740.914);
+    assert.strictEqual(sizePosition({ targetEUR: 1_111_111, price: 262.89, eurPerLocal: 0.8915, priceType: 'absolute' }), 4740.913);
     assert.strictEqual(sizePosition({ targetEUR: 1000, price: 0, eurPerLocal: 1, priceType: 'absolute' }), 0);
   });
 
@@ -95,6 +97,7 @@ describe('demo model portfolio: launch and daily refresh', function () {
     assert.ok(Math.abs(gold.costEurPerLocal - 2000 / 2243.4) < 1e-6, 'USD converted with the bank\'s factor');
     const invested = book.positions.reduce((s, p) => s + p.costEUR, 0);
     assert.ok(Math.abs(invested + book.cashEUR - 3_000_000) < 1, 'nominal fully accounted for');
+    assert.ok(book.cashEUR >= 0, 'the residual cash is never negative');
     assert.ok(Math.abs(result.totalAccountValue - 3_000_000) < 1, 'worth the nominal on day one');
 
     const account = await BankAccountsCollection.findOneAsync(MODEL_ACCOUNT_ID);

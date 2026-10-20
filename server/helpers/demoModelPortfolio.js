@@ -117,17 +117,18 @@ export function positionTargets(nominalEUR, sleeves = MODEL_SLEEVES) {
 
 /**
  * Quantity bought for a target in EUR. Percentage-quoted instruments (notes,
- * bonds) are bought in whole denominations; funds and shares in units to three
- * decimals, as the banks report them.
+ * bonds) are bought in whole denominations, rounded DOWN so the residual cash of
+ * the launch is never negative; funds and shares in units to three decimals, as
+ * the banks report them.
  */
 export function sizePosition({ targetEUR, price, eurPerLocal, priceType, denomination = DEFAULT_DENOMINATION }) {
   if (!(price > 0) || !(eurPerLocal > 0)) return 0;
   const targetLocal = targetEUR / eurPerLocal;
   if (priceType === 'percentage') {
     const lot = denomination > 0 ? denomination : DEFAULT_DENOMINATION;
-    return Math.max(lot, Math.round(targetLocal / price / lot) * lot);
+    return Math.max(lot, Math.floor(targetLocal / price / lot) * lot);
   }
-  return round(targetLocal / price, 3);
+  return Math.floor((targetLocal / price) * 1000) / 1000;
 }
 
 /**
