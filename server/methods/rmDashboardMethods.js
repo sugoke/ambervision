@@ -1784,7 +1784,20 @@ Meteor.methods({
       watchlist.sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent));
 
       if (watchlist.length > 0) {
-        return watchlist.slice(0, 10);
+        const top = watchlist.slice(0, 10);
+        // Next results publication date (informational: a failure leaves the column empty)
+        try {
+          const { EODApiHelpers } = await import('../../imports/api/eodApi.js');
+          const earnings = await EODApiHelpers.getNextEarningsDates(top.map(w => w.fullTicker));
+          top.forEach(w => {
+            const next = earnings[w.fullTicker];
+            w.nextEarningsDate = next?.date || null;
+            w.nextEarningsSession = next?.session || null;
+          });
+        } catch (earningsError) {
+          console.warn('[RM Dashboard] Earnings dates unavailable:', earningsError.message);
+        }
+        return top;
       }
 
       // Fallback: no structured-product underlyings to track (e.g. a client

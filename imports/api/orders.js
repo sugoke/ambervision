@@ -924,9 +924,13 @@ export function quotesPriceAsPercent(assetType) {
 export function computeOrderEstimatedValue({ assetType, quantity, limitPrice, optionContractSize, fundQuantityMode }) {
   const qty = Number(quantity);
   const price = Number(limitPrice);
-  if (!(qty > 0) || !(price > 0)) return null;
+  if (!(qty > 0)) return null;
   if (assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) return null;
-  if (assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL) return null;
+  // A fund ordered by nominal is sized as a cash amount: that amount is the consideration
+  if (assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL) {
+    return Math.round(qty * 100) / 100;
+  }
+  if (!(price > 0)) return null;
 
   const value = quotesPriceAsPercent(assetType)
     ? qty * price / 100

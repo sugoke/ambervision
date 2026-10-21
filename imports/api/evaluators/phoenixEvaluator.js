@@ -1121,17 +1121,30 @@ export const PhoenixEvaluator = {
       }
       // Check for memory autocall (all underlyings flagged)
       else if (phoenixParams.memoryAutocall && targetObservation.isCallable) {
-        const allFlagged = Object.keys(underlyingAutocallFlags || {}).length === underlyings.length;
+        // At the observation each underlying is flagged if it was before OR is at/above the
+        // autocall level that day (same rule as the schedule evaluation), so a stock sitting
+        // above the level today completes the set with the ones locked earlier.
+        const flags = underlyingAutocallFlags || {};
+        const allFlagged = underlyings.length > 0 &&
+          underlyings.every(u => !!flags[u.ticker] || (u.performance || 0) >= autocallThreshold);
         if (allFlagged) {
           prediction.autocallWouldTrigger = true;
           prediction.outcomeType = 'autocall';
 
+          // Early redemption pays 100% + the period coupon + all accumulated memory,
+          // whether or not the basket sits above the coupon barrier
           const autocallPrice = 100 + couponRate + totalMemoryCoupons;
           prediction.autocallPrice = autocallPrice;
           prediction.autocallPriceFormatted = `${autocallPrice.toFixed(2)}%`;
 
-          prediction.displayText = `${prediction.dateFormatted}; memory autocall; ${prediction.autocallPriceFormatted}`;
-          prediction.explanation = `All underlyings have reached autocall level at some point. Memory autocall would trigger at ${prediction.autocallPriceFormatted}.`;
+          prediction.couponWouldPay = true;
+          prediction.couponAmount = couponRate;
+          prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
+
+          const memoryNote = totalMemoryCoupons > 0 ? ` (incl. ${prediction.totalMemoryCouponsFormatted} memory)` : '';
+          if (totalMemoryCoupons > 0) prediction.memoryWouldBeReleased = true;
+          prediction.displayText = `${prediction.dateFormatted}; autocall & coupon; ${prediction.autocallPriceFormatted}${memoryNote}`;
+          prediction.explanation = `Every underlying has reached the autocall level (${effectiveAutocallLevel}%) on or before this date. Memory autocall would trigger at ${prediction.autocallPriceFormatted}: 100% + ${prediction.couponAmountFormatted} coupon${totalMemoryCoupons > 0 ? ` + ${prediction.totalMemoryCouponsFormatted} memory coupons` : ''}.`;
         } else if (isGuaranteedCoupon || currentBasketLevel >= couponThreshold) {
           // Memory autocall conditions not met, but coupon would be paid (either guaranteed or above barrier)
           prediction.couponWouldPay = true;

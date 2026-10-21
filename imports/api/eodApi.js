@@ -10,6 +10,11 @@ const EOD_BASE_URL = 'https://eodhistoricaldata.com/api';
 const OPTIONS_CHAIN_CACHE = new Map();
 const OPTIONS_CHAIN_TTL_MS = 30 * 60 * 1000;
 
+// Next-results dates (earnings calendar), per ticker, held in memory.
+const EARNINGS_CACHE = new Map();
+const EARNINGS_TTL_MS = 12 * 60 * 60 * 1000;
+const EARNINGS_HORIZON_DAYS = 180;
+
 // Popular indices data with common aliases (from EOD INDX exchange)
 const POPULAR_INDICES = [
   // US Indices
@@ -851,6 +856,57 @@ export const EODApiHelpers = {
       console.warn(`[EOD API] Failed to fetch splits for ${fullTicker}:`, error.message);
       return [];
     }
+  },
+
+  // Next results publication date per ticker, from the EOD earnings calendar.
+  // Returns { [fullTicker]: { date: 'YYYY-MM-DD', session: 'BeforeMarket'|'AfterMarket'|null } | null }.
+  // Dates move rarely, so each ticker is held in memory for EARNINGS_TTL_MS; a ticker the
+  // calendar does not cover is cached as null so it is not re-requested on every dashboard load.
+  async getNextEarningsDates(fullTickers) {
+    const wanted = [...new Set((fullTickers || []).filter(t => typeof t === 'string' && t.includes('.')))];
+    const result = {};
+    const missing = [];
+    const now = Date.now();
+    for (const t of wanted) {
+      const hit = EARNINGS_CACHE.get(t);
+      if (hit && now - hit.fetchedAt < EARNINGS_TTL_MS) result[t] = hit.value;
+      else missing.push(t);
+    }
+    if (missing.length === 0) return result;
+
+    const iso = (d) => d.toISOString().split('T')[0];
+    const today = new Date();
+    const horizon = new Date(today.getTime() + EARNINGS_HORIZON_DAYS * 24 * 60 * 60 * 1000);
+    try {
+      const response = await HTTP.get(`${EOD_BASE_URL}/calendar/earnings`, {
+        params: {
+          api_token: EOD_API_TOKEN,
+          fmt: 'json',
+          symbols: missing.join(','),
+          from: iso(today),
+          to: iso(horizon)
+        }
+      });
+      const rows = Array.isArray(response.data?.earnings) ? response.data.earnings : [];
+      const todayIso = iso(today);
+      const next = {};
+      for (const row of rows) {
+        const date = row.report_date || row.date;
+        if (!row.code || !date || date < todayIso) continue;
+        if (!next[row.code] || date < next[row.code].date) {
+          next[row.code] = { date, session: row.before_after_market || null };
+        }
+      }
+      for (const t of missing) {
+        const value = next[t] || null;
+        EARNINGS_CACHE.set(t, { value, fetchedAt: now });
+        result[t] = value;
+      }
+    } catch (error) {
+      // Not cached: the next load retries
+      console.warn('[EOD API] Failed to fetch earnings calendar:', error.message);
+    }
+    return result;
   },
 
   // Validate if a security ticker is valid

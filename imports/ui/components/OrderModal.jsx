@@ -507,6 +507,12 @@ const OrderModal = ({
     const qty = isBulkMode ? bulkTotalQuantity : parseFloat(quantity);
     if (!qty || qty <= 0) return null;
 
+    // A fund ordered by nominal is sized as a cash amount: the amount IS the estimate
+    // (multiplying it by the NAV would be wrong by the price of one unit)
+    if (assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL) {
+      return qty.toFixed(2);
+    }
+
     const isOption = assetType === ASSET_TYPES.OPTION;
     // An option premium is quoted per share, so the consideration is
     // premium x contracts x contract size. Without the multiplier 200 contracts
@@ -539,7 +545,7 @@ const OrderModal = ({
       return (qty * prefillData.marketPrice).toFixed(2);
     }
     return null;
-  }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, indicativePrice, assetType, optionContractSize, optionQuote]);
+  }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, indicativePrice, assetType, optionContractSize, optionQuote, fundQuantityMode]);
 
   // "Amount to convert": size a units order from an amount in the price's
   // currency (e.g. invest EUR 1,000,000 in a fund ordered in units). Uses the

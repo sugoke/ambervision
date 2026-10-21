@@ -455,6 +455,9 @@ export const CMBMonacoParser = {
       'cert', 'cert_idx', 'cert_trk', 'cert_bonus', 'certificate'
     ];
     const lowerAssetTypeId = (assetTypeId || '').toLowerCase();
+    // Funds (fd_var, fd_mm, fd_bond, ...) quote a NAV per share in the fund's currency,
+    // whatever they invest in: 'fd_bond' must not match the 'bond' substring below.
+    if (lowerAssetTypeId.startsWith('fd_')) return false;
     return percentageTypes.includes(lowerAssetTypeId) ||
            lowerAssetTypeId.includes('struct') ||
            lowerAssetTypeId.includes('cert') ||

@@ -26,6 +26,16 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
     return `${sign}${change.toFixed(2)}%`;
   };
 
+  // 'YYYY-MM-DD' -> '12 Nov'; parsed as a calendar date so no timezone shift
+  const formatEarningsDate = (iso) => {
+    if (!iso) return '-';
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+      day: 'numeric', month: 'short', timeZone: 'UTC'
+    });
+  };
+  const SESSION_LABELS = { BeforeMarket: 'before open', AfterMarket: 'after close' };
+
   const styles = {
     card: {
       background: 'var(--card-bg, var(--bg-secondary))',
@@ -213,6 +223,7 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
                 <th style={styles.th}>Security</th>
                 <th style={styles.thRight}>Price</th>
                 <th style={styles.thRight}>Daily</th>
+                <th style={styles.thRight}>Next results</th>
               </tr>
             </thead>
             <tbody>
@@ -260,6 +271,12 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
                     <span style={styles.change(ticker.changePercent >= 0)}>
                       {formatChange(ticker.changePercent)}
                     </span>
+                  </td>
+                  <td style={styles.tdRight}>
+                    <div style={styles.price}>{formatEarningsDate(ticker.nextEarningsDate)}</div>
+                    {SESSION_LABELS[ticker.nextEarningsSession] && (
+                      <div style={styles.tickerCode}>{SESSION_LABELS[ticker.nextEarningsSession]}</div>
+                    )}
                   </td>
                 </tr>
               ))}
