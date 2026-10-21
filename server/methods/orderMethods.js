@@ -7874,6 +7874,57 @@ Meteor.methods({
   },
 
   /**
+   * A reference price for a security the order modal has no price for (a position
+   * whose own row carries none, or a manually entered ISIN).
+   *
+   * 1. The latest bank price of the same ISIN in any other account, same currency.
+   *    Percentage-priced rows are skipped: their scale differs from the per-unit
+   *    price a fund or equity order is sized on.
+   * 2. Otherwise the EOD feed, via the listings the ISIN resolves to.
+   * Returns { price, currency, source, asOf } or null - never a made-up number.
+   */
+  async 'orders.getReferencePriceByIsin'({ isin, currency }, sessionId) {
+    check(isin, String);
+    check(currency, Match.Maybe(String));
+    check(sessionId, String);
+    this.unblock();
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access prices');
+    }
+    if (!isin || isPlaceholderIsin(isin)) return null;
+
+    const donors = await PMSHoldingsCollection.find({
+      isin,
+      isLatest: true,
+      isActive: true,
+      marketPrice: { $gt: 0 },
+      priceType: { $ne: 'percentage' },
+      ...(currency ? { currency } : {})
+    }, { fields: { marketPrice: 1, currency: 1, fileDate: 1, snapshotDate: 1 }, sort: { fileDate: -1 }, limit: 1 }).fetchAsync();
+    if (donors.length > 0) {
+      const d = donors[0];
+      return { price: d.marketPrice, currency: d.currency || currency || null, source: 'holding', asOf: d.snapshotDate || d.fileDate || null };
+    }
+
+    const listings = await EODApiHelpers.findListingsByIsin(isin);
+    const matching = (listings || []).filter(r => String(r.ISIN || '').toUpperCase() === isin.toUpperCase());
+    const ordered = [...matching.filter(r => !currency || String(r.Currency || '').toUpperCase() === currency.toUpperCase()), ...matching];
+    for (const listing of ordered.slice(0, 3)) {
+      try {
+        const quote = await EODApiHelpers.getRealTimePrice(listing.Code, listing.Exchange);
+        if (quote?.close > 0) {
+          return { price: quote.close, currency: listing.Currency || currency || null, source: 'eod', asOf: new Date() };
+        }
+      } catch (err) {
+        // try the next listing
+      }
+    }
+    return null;
+  },
+
+  /**
    * Orders already raised on the same security in the same account, shown by
    * the order modal before a new one is placed: every order still open (from
    * pending validation to partially executed) and every non-cancelled order of

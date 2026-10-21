@@ -3817,6 +3817,37 @@ Meteor.methods({
   },
 
   /**
+   * Next results publication date of listed equities, by ISIN, for the PMS equity rows.
+   * Informational: an ISIN the feed cannot resolve or has no scheduled date for is simply
+   * absent from the result. Returns { [isin]: { date: 'YYYY-MM-DD', session } }.
+   */
+  async 'pms.getNextEarningsByIsin'({ isins, sessionId }) {
+    check(isins, [String]);
+    check(sessionId, String);
+    this.unblock();
+
+    const session = await SessionHelpers.findByToken(sessionId);
+    if (!session) {
+      throw new Meteor.Error('not-authorized', 'Invalid session');
+    }
+
+    const { EODApiHelpers } = await import('../../imports/api/eodApi.js');
+    const unique = [...new Set(isins.map(i => i.toUpperCase()))].slice(0, 200);
+    const tickerByIsin = {};
+    await Promise.all(unique.map(async (isin) => {
+      const fullTicker = await EODApiHelpers.resolveFullTickerByIsin(isin);
+      if (fullTicker) tickerByIsin[isin] = fullTicker;
+    }));
+
+    const earnings = await EODApiHelpers.getNextEarningsDates(Object.values(tickerByIsin));
+    const result = {};
+    for (const [isin, fullTicker] of Object.entries(tickerByIsin)) {
+      if (earnings[fullTicker]) result[isin] = earnings[fullTicker];
+    }
+    return result;
+  },
+
+  /**
    * Get price history sparkline data for a holding by ISIN
    * Strategy 1: ProductPricesCollection (structured products, bonds - stored by ISIN)
    * Strategy 2: MarketDataCacheCollection (equities - stored by fullTicker, resolved via EOD API)

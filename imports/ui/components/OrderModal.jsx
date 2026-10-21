@@ -960,6 +960,26 @@ const OrderModal = ({
     }
   };
 
+  // A security with no price of its own (a position whose row carries none, or an
+  // ISIN typed in): borrow the latest price of the same ISIN from other accounts,
+  // then the EOD feed. Only when nothing else supplied one - never over a real price.
+  const referenceIsin = selectedHolding?.isin || selectedSecurity?.isin || prefillData?.isin || '';
+  const referenceCurrency = selectedHolding?.currency || selectedSecurity?.currency || null;
+  useEffect(() => {
+    if (!isOpen || isBulkMode || !referenceIsin || assetType === ASSET_TYPES.OPTION
+      || quotesPriceAsPercent(assetType) || assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) return;
+    if (indicativePrice > 0 || isLoadingPrice) return;
+    let cancelled = false;
+    Meteor.callAsync('orders.getReferencePriceByIsin', { isin: referenceIsin, currency: referenceCurrency || undefined }, getSessionId())
+      .then(res => {
+        if (cancelled || !(res?.price > 0)) return;
+        setIndicativePrice(res.price);
+        if (res.currency) setIndicativePriceCurrency(prev => prev || res.currency);
+      })
+      .catch(err => console.warn('Could not load a reference price:', err.message));
+    return () => { cancelled = true; };
+  }, [isOpen, isBulkMode, referenceIsin, referenceCurrency, assetType, indicativePrice, isLoadingPrice]);
+
   // Load the option chain whenever the underlying changes on an option order.
   // A typed contract is always allowed; the chain just makes the common case
   // (a US name) a pick instead of a transcription.

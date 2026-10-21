@@ -1850,6 +1850,20 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     return true;
   });
 
+  // Next results publication date of the direct equities shown (informational, by ISIN)
+  const [earningsByIsin, setEarningsByIsin] = useState({});
+  const equityIsinsKey = [...new Set(nonCashPositions
+    .filter(p => p.assetClass === 'equity' && p.assetSubClass !== 'equity_fund' && p.isin)
+    .map(p => p.isin.toUpperCase()))].sort().join(',');
+  useEffect(() => {
+    if (!equityIsinsKey) return;
+    let cancelled = false;
+    Meteor.callAsync('pms.getNextEarningsByIsin', { isins: equityIsinsKey.split(','), sessionId: localStorage.getItem('sessionId') })
+      .then(res => { if (!cancelled && res) setEarningsByIsin(prev => ({ ...prev, ...res })); })
+      .catch(err => console.warn('Next results dates unavailable:', err.message));
+    return () => { cancelled = true; };
+  }, [equityIsinsKey]);
+
   // Sort positions
   const sortedPositions = [...filteredPositions].sort((a, b) => {
     let aValue = a[sortBy];
@@ -4244,6 +4258,14 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                                 : position.securityType === 'TERM_DEPOSIT'
                                   ? (position.depositTerm?.type === 'call' ? 'Call deposit' : 'Rolling deposit')
                                   : 'N/A')}
+                            {position.isin && earningsByIsin[position.isin.toUpperCase()]?.date && (
+                              <span
+                                title="Next results publication"
+                                style={{ marginLeft: '0.35rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                              >
+                                · Results {new Date(`${earningsByIsin[position.isin.toUpperCase()].date}T00:00:00Z`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })}
+                              </span>
+                            )}
                             {position.isin && (
                               <HoldingPriceChart
                                 isin={position.isin}
@@ -5287,7 +5309,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                         y: {
                           grace: '10%',
                           grid: { color: gridColor },
-                          ticks: { color: tickColor, callback: (value) => `${value}%` }
+                          ticks: { color: tickColor, callback: (value) => `${parseFloat(Number(value).toFixed(2))}%` }
                         }
                       }
                     }}

@@ -13,6 +13,8 @@ const OPTIONS_CHAIN_TTL_MS = 30 * 60 * 1000;
 // Next-results dates (earnings calendar), per ticker, held in memory.
 const EARNINGS_CACHE = new Map();
 const EARNINGS_TTL_MS = 12 * 60 * 60 * 1000;
+const ISIN_TICKER_CACHE = new Map();
+const ISIN_TICKER_TTL_MS = 24 * 60 * 60 * 1000;
 const EARNINGS_HORIZON_DAYS = 180;
 
 // Popular indices data with common aliases (from EOD INDX exchange)
@@ -907,6 +909,22 @@ export const EODApiHelpers = {
       console.warn('[EOD API] Failed to fetch earnings calendar:', error.message);
     }
     return result;
+  },
+
+  // ISIN -> "CODE.EXCHANGE" through the EOD listings, cached in memory (a listing rarely
+  // changes). Prefers the US line, otherwise the first exact-ISIN listing. A failed lookup
+  // is not cached; "no listing" is, so it is not re-requested on every page load.
+  async resolveFullTickerByIsin(isin) {
+    const key = String(isin || '').toUpperCase();
+    const hit = ISIN_TICKER_CACHE.get(key);
+    if (hit && Date.now() - hit.fetchedAt < ISIN_TICKER_TTL_MS) return hit.value;
+    const rows = await this.findListingsByIsin(key);
+    if (!rows) return null;
+    const exact = rows.filter(r => r.Code && r.Exchange && String(r.ISIN || '').toUpperCase() === key);
+    const pick = exact.find(r => r.Exchange === 'US') || exact[0];
+    const value = pick ? `${pick.Code}.${pick.Exchange}` : null;
+    ISIN_TICKER_CACHE.set(key, { value, fetchedAt: Date.now() });
+    return value;
   },
 
   // Validate if a security ticker is valid
