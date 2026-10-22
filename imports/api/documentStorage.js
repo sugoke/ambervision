@@ -306,7 +306,7 @@ export function termsheetFilenameFromUrl(url) {
  * (server/migrations/movePublicDocumentsPrivate.js) drains that tree, but the
  * fallback stays so a file that hasn't been migrated yet still resolves.
  */
-export function resolveTermsheetPath(filename) {
+export function resolveTermsheetPath(filename, { allowIsinFallback = true } = {}) {
   if (!isSafeTermsheetFilename(filename)) return null;
 
   for (const root of termsheetSearchRoots()) {
@@ -320,7 +320,34 @@ export function resolveTermsheetPath(filename) {
   // are on disk yet invisible to the lookup above — every one of them served a
   // 404 while the product still advertised a term sheet. flattenNestedTermsheets()
   // repairs the layout at startup; this fallback covers anything it could not move.
-  return findNestedTermsheet(filename);
+  return findNestedTermsheet(filename) || (allowIsinFallback ? findTermsheetByIsin(filename) : null);
+}
+
+/**
+ * Last resort when the exact name is not in the store: a term sheet dropped on
+ * the volume under the issuer's own name ("CH1486565364.pdf", "CH… termsheet.pdf")
+ * while the product record expects "<ISIN>_<title>.pdf". The ISIN leading the
+ * expected name identifies the document. `<ISIN>.pdf` wins; otherwise only an
+ * unambiguous single match is used - with several candidates (extension,
+ * restructuring...) we refuse to guess which one is the reference.
+ */
+function findTermsheetByIsin(filename) {
+  const isin = (String(filename).match(/^([A-Za-z]{2}[A-Za-z0-9]{9}[0-9])(?=[_.\s-]|$)/) || [])[1];
+  if (!isin) return null;
+  const wanted = isin.toUpperCase();
+  for (const root of termsheetSearchRoots()) {
+    let names;
+    try {
+      names = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name);
+    } catch {
+      continue;
+    }
+    const matches = names.filter(n => n.toUpperCase().includes(wanted) && /\.pdf$/i.test(n));
+    const exact = matches.find(n => n.toUpperCase() === `${wanted}.PDF`);
+    if (exact) return path.join(root, exact);
+    if (matches.length === 1) return path.join(root, matches[0]);
+  }
+  return null;
 }
 
 /** Directories a flat term-sheet filename may legitimately live in. */
@@ -432,7 +459,8 @@ export function writeTermsheetFile(filename, buffer) {
 /** Best-effort delete of a stored term sheet. Never throws. */
 export function deleteTermsheetFile(filename) {
   try {
-    const filePath = resolveTermsheetPath(filename);
+    // Exact name only: never delete a different file the ISIN fallback happened to match
+    const filePath = resolveTermsheetPath(filename, { allowIsinFallback: false });
     if (filePath) {
       fs.unlinkSync(filePath);
       return true;
