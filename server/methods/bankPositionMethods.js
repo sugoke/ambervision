@@ -3848,6 +3848,119 @@ Meteor.methods({
   },
 
   /**
+   * Buy / sell history of one security in one account, with FIFO round trips and their
+   * realized result, for the PMS "trade history" modal. Everything is computed and
+   * formatted here: the modal only displays it.
+   */
+  async 'pms.getPositionTradeHistory'({ sessionId, isin, bankId, portfolioCode, priceType }) {
+    check(sessionId, String);
+    check(isin, String);
+    check(bankId, String);
+    check(portfolioCode, String);
+    check(priceType, Match.Maybe(String));
+    this.unblock();
+
+    const session = await SessionHelpers.findByToken(sessionId);
+    if (!session?.userId) throw new Meteor.Error('not-authorized', 'Invalid session');
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser) throw new Meteor.Error('not-authorized', 'User not found');
+
+    // CONSOLIDATED rows are roll-ups of the per-account rows: they have no trades of their own
+    if (portfolioCode === 'CONSOLIDATED') {
+      throw new Meteor.Error('invalid-account', 'Open the trade history from a single account');
+    }
+
+    // SECURITY: the caller names the account, so confirm it is in the caller's access scope
+    const { resolveScope, isPortfolioCodeInScope } = await import('/server/helpers/accessScope.js');
+    const scope = await resolveScope(currentUser);
+    if (scope.denied || !isPortfolioCodeInScope(scope, bankId, portfolioCode)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized for this account');
+    }
+
+    const { portfolioCodeRegex } = await import('/imports/utils/portfolioCode.js');
+    const { buildTradeHistory, tradeSide } = await import('/imports/api/helpers/tradeHistory.js');
+
+    const rows = await PMSOperationsCollection.find({
+      isin: isin.toUpperCase(),
+      bankId,
+      portfolioCode: { $regex: portfolioCodeRegex(portfolioCode) },
+      isActive: true,
+      operationType: { $in: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION'] }
+    }, { sort: { operationDate: 1 } }).fetchAsync();
+
+    const isPercent = priceType === 'percentage';
+    const pad = (n) => String(n).padStart(2, '0');
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const fmtDate = (d) => {
+      if (!d) return '-';
+      const x = new Date(d);
+      return `${pad(x.getUTCDate())} ${MONTHS[x.getUTCMonth()]} ${x.getUTCFullYear()}`;
+    };
+    const fmtNum = (n, max = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: max === 0 ? 0 : 2, maximumFractionDigits: max });
+    const fmtQty = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 4 });
+    const fmtSigned = (n) => `${n >= 0 ? '+' : '-'}${fmtNum(Math.abs(n))}`;
+    const fmtUnit = (u) => (isPercent ? `${fmtNum(u * 100)}%` : fmtNum(u, 4));
+
+    const currency = rows.map(r => r.instrumentCurrency || r.operationCurrency || r.currency || r.std?.currency || r.portfolioCurrency).find(Boolean) || null;
+
+    const trades = rows.map(r => ({
+      id: r._id,
+      date: r.operationDate,
+      side: tradeSide(r.operationType),
+      quantity: Math.abs(r.quantity || 0),
+      amount: Math.abs(r.grossAmount ?? r.netAmount ?? 0),
+      fees: Math.abs(r.totalFees ?? r.fees ?? 0),
+      reference: r.operationId || null
+    }));
+
+    const history = buildTradeHistory(trades);
+
+    return {
+      isin: isin.toUpperCase(),
+      securityName: rows[0]?.securityName || null,
+      currency,
+      firstOperationDate: rows.length ? fmtDate(rows[0].operationDate) : null,
+      hasTrades: rows.length > 0,
+      summary: {
+        tradeCount: trades.length,
+        roundTripCount: history.closed.length,
+        boughtFormatted: fmtNum(history.totals.bought),
+        soldFormatted: fmtNum(history.totals.sold),
+        feesFormatted: fmtNum(history.totals.fees),
+        realizedFormatted: history.closed.length ? fmtSigned(history.totals.realized) : null,
+        realizedIsPositive: history.totals.realized >= 0
+      },
+      trades: trades.slice().reverse().map(t => ({
+        id: t.id,
+        dateFormatted: fmtDate(t.date),
+        side: t.side,
+        quantityFormatted: fmtQty(t.quantity),
+        unitFormatted: t.quantity > 0 ? fmtUnit(t.amount / t.quantity) : '-',
+        amountFormatted: fmtNum(t.amount),
+        feesFormatted: t.fees ? fmtNum(t.fees) : '-'
+      })),
+      closed: history.closed.slice().reverse().map(c => ({
+        openDateFormatted: fmtDate(c.openDate),
+        closeDateFormatted: fmtDate(c.closeDate),
+        daysFormatted: `${c.days} d`,
+        quantityFormatted: fmtQty(c.quantity),
+        buyUnitFormatted: fmtUnit(c.buyUnit),
+        sellUnitFormatted: fmtUnit(c.sellUnit),
+        pnlFormatted: fmtSigned(c.pnl),
+        pnlPercentFormatted: c.pnlPercent == null ? null : `${c.pnlPercent >= 0 ? '+' : ''}${fmtNum(c.pnlPercent)}%`,
+        isPositive: c.pnl >= 0
+      })),
+      open: history.open.map(o => ({
+        dateFormatted: fmtDate(o.date),
+        quantityFormatted: fmtQty(o.quantity),
+        buyUnitFormatted: fmtUnit(o.buyUnit),
+        costFormatted: fmtNum(o.cost)
+      })),
+      unmatchedSoldQuantityFormatted: history.unmatchedSoldQuantity > 0 ? fmtQty(history.unmatchedSoldQuantity) : null
+    };
+  },
+
+  /**
    * Get price history sparkline data for a holding by ISIN
    * Strategy 1: ProductPricesCollection (structured products, bonds - stored by ISIN)
    * Strategy 2: MarketDataCacheCollection (equities - stored by fullTicker, resolved via EOD API)

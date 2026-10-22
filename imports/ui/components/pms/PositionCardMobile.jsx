@@ -1,5 +1,6 @@
 import React from 'react';
 import HoldingPriceChart from '../HoldingPriceChart.jsx';
+import PositionTradeHistory from '../PositionTradeHistory.jsx';
 import LiveOrderPills from './LiveOrderPills.jsx';
 import { formatCurrency, formatPrice } from './pmsFormatters.js';
 import { S, POSITIVE, NEGATIVE, labelStyle, headlineRowStyle, cardStyle } from './pmsMobileStyles.js';
@@ -231,6 +232,16 @@ const PositionCardMobile = ({
               <HoldingPriceChart
                 isin={position.isin}
                 securityName={position.name}
+                sessionId={localStorage.getItem('sessionId')}
+              />
+            )}
+            {position.isin && (
+              <PositionTradeHistory
+                isin={position.isin}
+                securityName={position.name}
+                bankId={position.bankId}
+                portfolioCode={position.portfolioCode}
+                priceType={position.priceType}
                 sessionId={localStorage.getItem('sessionId')}
               />
             )}

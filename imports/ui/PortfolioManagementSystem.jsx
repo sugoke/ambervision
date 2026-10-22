@@ -37,6 +37,7 @@ import PortfolioReviewModal from './components/PortfolioReviewModal.jsx';
 import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
+import PositionTradeHistory from './components/PositionTradeHistory.jsx';
 import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
 import LiveOrderPills from './components/pms/LiveOrderPills.jsx';
 import { LIVE_AT_BANK_QUERY_STATUSES, isLiveAtBank } from '/imports/api/orders';
@@ -4270,6 +4271,16 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                               <HoldingPriceChart
                                 isin={position.isin}
                                 securityName={position.name}
+                                sessionId={localStorage.getItem('sessionId')}
+                              />
+                            )}
+                            {position.isin && (
+                              <PositionTradeHistory
+                                isin={position.isin}
+                                securityName={position.name}
+                                bankId={position.bankId}
+                                portfolioCode={position.portfolioCode}
+                                priceType={position.priceType}
                                 sessionId={localStorage.getItem('sessionId')}
                               />
                             )}
