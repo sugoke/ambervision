@@ -3878,15 +3878,30 @@ Meteor.methods({
     }
 
     const { portfolioCodeRegex } = await import('/imports/utils/portfolioCode.js');
-    const { buildTradeHistory, tradeSide } = await import('/imports/api/helpers/tradeHistory.js');
+    const { buildTradeHistory, tradeSide, MOVEMENT_TYPES } = await import('/imports/api/helpers/tradeHistory.js');
+    const { PMSHoldingsCollection: Holdings } = await import('/imports/api/pmsHoldings.js');
 
     const rows = await PMSOperationsCollection.find({
       isin: isin.toUpperCase(),
       bankId,
       portfolioCode: { $regex: portfolioCodeRegex(portfolioCode) },
       isActive: true,
-      operationType: { $in: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION'] }
+      operationType: { $in: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION', ...MOVEMENT_TYPES] }
     }, { sort: { operationDate: 1 } }).fetchAsync();
+
+    // Securities-only movements (cash-free): the shares delivered when a structured product
+    // ends, a custody transfer. Rows that carry cash are cash transfers, not this security.
+    const isMovement = (r) => MOVEMENT_TYPES.includes(r.operationType)
+      && Math.abs(r.quantity || 0) > 0 && !(Math.abs(r.grossAmount || 0) > 0) && !(Math.abs(r.netAmount || 0) > 0);
+    const usable = rows.filter(r => tradeSide(r.operationType) || isMovement(r));
+
+    // What the bank holds today, to settle the direction of a movement whose sign the bank does not make explicit
+    const heldRows = await Holdings.find({
+      isin: isin.toUpperCase(), bankId, isLatest: true, isActive: true,
+      portfolioCode: { $regex: portfolioCodeRegex(portfolioCode) }
+    }, { fields: { quantity: 1, costPrice: 1, portfolioCode: 1 } }).fetchAsync();
+    const heldNow = heldRows.filter(h => h.portfolioCode !== 'CONSOLIDATED');
+    const heldQuantity = heldNow.reduce((s, h) => s + (h.quantity || 0), 0);
 
     const isPercent = priceType === 'percentage';
     const pad = (n) => String(n).padStart(2, '0');
@@ -3901,33 +3916,59 @@ Meteor.methods({
     const fmtSigned = (n) => `${n >= 0 ? '+' : '-'}${fmtNum(Math.abs(n))}`;
     const fmtUnit = (u) => (isPercent ? `${fmtNum(u * 100)}%` : fmtNum(u, 4));
 
-    const currency = rows.map(r => r.instrumentCurrency || r.operationCurrency || r.currency || r.std?.currency || r.portfolioCurrency).find(Boolean) || null;
+    const currency = usable.map(r => r.instrumentCurrency || r.operationCurrency || r.currency || r.std?.currency || r.portfolioCurrency).find(Boolean) || null;
 
-    const trades = rows.map(r => ({
-      id: r._id,
-      date: r.operationDate,
-      side: tradeSide(r.operationType),
-      quantity: Math.abs(r.quantity || 0),
-      amount: Math.abs(r.grossAmount ?? r.netAmount ?? 0),
-      fees: Math.abs(r.totalFees ?? r.fees ?? 0),
-      reference: r.operationId || null
-    }));
+    // Direction of the movements: the stored sign when it reconciles with today's position,
+    // the opposite sign when only that does (banks differ on how they sign a deposit).
+    const priced = usable.filter(r => tradeSide(r.operationType));
+    const pricedNet = priced.reduce((s, r) => s + (tradeSide(r.operationType) === 'BUY' ? 1 : -1) * Math.abs(r.quantity || 0), 0);
+    const movements = usable.filter(isMovement);
+    const signedMovements = movements.reduce((s, r) => s + (r.operationType === 'TRANSFER_IN' ? Math.abs(r.quantity) : r.operationType === 'TRANSFER_OUT' ? -Math.abs(r.quantity) : r.quantity), 0);
+    const near = (a, c) => Math.abs(a - c) < 1e-6;
+    const movementSign = near(pricedNet + signedMovements, heldQuantity) ? 1
+      : near(pricedNet - signedMovements, heldQuantity) ? -1 : 1;
+    const movementSide = (r) => {
+      if (r.operationType === 'TRANSFER_IN') return 'IN';
+      if (r.operationType === 'TRANSFER_OUT') return 'OUT';
+      return (r.quantity * movementSign) > 0 ? 'IN' : 'OUT';
+    };
+
+    // A position built only from deliveries has no purchase price of its own: the bank's average cost on the position is then exact
+    const onlyDeliveries = priced.every(r => tradeSide(r.operationType) !== 'BUY');
+    const bankUnitCost = onlyDeliveries && heldNow.length === 1 && heldNow[0].costPrice > 0 ? heldNow[0].costPrice : null;
+
+    const trades = usable.map(r => {
+      const side = tradeSide(r.operationType) || movementSide(r);
+      const quantity = Math.abs(r.quantity || 0);
+      const delivered = side === 'IN' || side === 'OUT';
+      return {
+        id: r._id,
+        date: r.operationDate,
+        side,
+        quantity,
+        amount: delivered ? (side === 'IN' && bankUnitCost ? quantity * bankUnitCost : null) : Math.abs(r.grossAmount ?? r.netAmount ?? 0),
+        costFromBank: delivered && side === 'IN' && !!bankUnitCost,
+        fees: Math.abs(r.totalFees ?? r.fees ?? 0),
+        reference: r.operationId || null
+      };
+    });
 
     const history = buildTradeHistory(trades);
 
     return {
       isin: isin.toUpperCase(),
-      securityName: rows[0]?.securityName || null,
+      securityName: usable[0]?.securityName || null,
       currency,
-      firstOperationDate: rows.length ? fmtDate(rows[0].operationDate) : null,
-      hasTrades: rows.length > 0,
+      firstOperationDate: usable.length ? fmtDate(usable[0].operationDate) : null,
+      hasTrades: usable.length > 0,
+      heldQuantityFormatted: heldNow.length ? fmtQty(heldQuantity) : null,
       summary: {
         tradeCount: trades.length,
         roundTripCount: history.closed.length,
         boughtFormatted: fmtNum(history.totals.bought),
         soldFormatted: fmtNum(history.totals.sold),
         feesFormatted: fmtNum(history.totals.fees),
-        realizedFormatted: history.closed.length ? fmtSigned(history.totals.realized) : null,
+        realizedFormatted: history.closed.some(c => c.pnl != null) ? fmtSigned(history.totals.realized) : null,
         realizedIsPositive: history.totals.realized >= 0
       },
       trades: trades.slice().reverse().map(t => ({
@@ -3935,8 +3976,9 @@ Meteor.methods({
         dateFormatted: fmtDate(t.date),
         side: t.side,
         quantityFormatted: fmtQty(t.quantity),
-        unitFormatted: t.quantity > 0 ? fmtUnit(t.amount / t.quantity) : '-',
-        amountFormatted: fmtNum(t.amount),
+        unitFormatted: t.amount != null && t.quantity > 0 ? fmtUnit(t.amount / t.quantity) : '-',
+        amountFormatted: t.amount != null ? fmtNum(t.amount) : '-',
+        costNote: t.costFromBank ? "bank's average cost" : null,
         feesFormatted: t.fees ? fmtNum(t.fees) : '-'
       })),
       closed: history.closed.slice().reverse().map(c => ({
@@ -3944,17 +3986,19 @@ Meteor.methods({
         closeDateFormatted: fmtDate(c.closeDate),
         daysFormatted: `${c.days} d`,
         quantityFormatted: fmtQty(c.quantity),
-        buyUnitFormatted: fmtUnit(c.buyUnit),
-        sellUnitFormatted: fmtUnit(c.sellUnit),
-        pnlFormatted: fmtSigned(c.pnl),
+        buyUnitFormatted: c.buyUnit != null ? fmtUnit(c.buyUnit) : 'delivered',
+        sellUnitFormatted: c.sellUnit != null ? fmtUnit(c.sellUnit) : '-',
+        delivered: !!c.delivered,
+        pnlFormatted: c.pnl == null ? 'n/a' : fmtSigned(c.pnl),
         pnlPercentFormatted: c.pnlPercent == null ? null : `${c.pnlPercent >= 0 ? '+' : ''}${fmtNum(c.pnlPercent)}%`,
-        isPositive: c.pnl >= 0
+        isPositive: c.pnl != null && c.pnl >= 0
       })),
       open: history.open.map(o => ({
         dateFormatted: fmtDate(o.date),
         quantityFormatted: fmtQty(o.quantity),
-        buyUnitFormatted: fmtUnit(o.buyUnit),
-        costFormatted: fmtNum(o.cost)
+        buyUnitFormatted: o.buyUnit != null ? fmtUnit(o.buyUnit) : 'delivered',
+        delivered: !!o.delivered,
+        costFormatted: o.cost != null ? fmtNum(o.cost) : '-'
       })),
       unmatchedSoldQuantityFormatted: history.unmatchedSoldQuantity > 0 ? fmtQty(history.unmatchedSoldQuantity) : null
     };

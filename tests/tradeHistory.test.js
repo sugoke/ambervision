@@ -53,4 +53,24 @@ describe('tradeHistory', function () {
     assert.strictEqual(h.closed[0].openDate, '2026-01-01');
     assert.strictEqual(h.unmatchedSoldQuantity, 0);
   });
+
+  it('keeps a delivery without a price open and never invents its result', function () {
+    const h = buildTradeHistory([
+      { date: '2026-09-10', side: 'IN', quantity: 1000, amount: null, fees: 0 },
+      sell('2026-10-01', 400, 120000)
+    ]);
+    assert.strictEqual(h.closed.length, 1);
+    assert.strictEqual(h.closed[0].pnl, null);
+    assert.strictEqual(h.totals.realized, 0);
+    assert.strictEqual(h.open[0].quantity, 600);
+    assert.strictEqual(h.open[0].cost, null);
+  });
+
+  it('values a delivery at a supplied cost', function () {
+    const h = buildTradeHistory([
+      { date: '2026-09-10', side: 'IN', quantity: 100, amount: 24883, fees: 0 },
+      sell('2026-10-01', 100, 26000)
+    ]);
+    assert.ok(Math.abs(h.closed[0].pnl - 1117) < 1e-9);
+  });
 });

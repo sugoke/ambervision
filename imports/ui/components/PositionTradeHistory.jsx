@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import Modal from './common/Modal.jsx';
 
@@ -12,6 +13,7 @@ import Modal from './common/Modal.jsx';
 const th = { textAlign: 'right', padding: '0.4rem 0.6rem', fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid var(--border-color)', whiteSpace: 'nowrap' };
 const td = { textAlign: 'right', padding: '0.4rem 0.6rem', fontSize: '0.8rem', borderBottom: '1px solid var(--border-color)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' };
 const left = { textAlign: 'left' };
+const SIDE_LABELS = { BUY: 'Buy', SELL: 'Sell', IN: 'Delivered in', OUT: 'Delivered out' };
 const sectionTitle = { fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-muted)', margin: '1.1rem 0 0.4rem' };
 
 const Table = ({ columns, rows, render }) => (
@@ -73,6 +75,8 @@ const PositionTradeHistory = ({ isin, securityName, bankId, portfolioCode, price
         </svg>
       </span>
 
+      {/* Portaled to <body>: inside the PMS rows a fixed overlay is trapped by the page's backdrop-filter wrappers and lands off-screen, and it inherits the row's monospace font */}
+      {createPortal(
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={`Trade history · ${securityName || isin}`} size="large">
         {loading && <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>Loading trade history...</div>}
         {error && !loading && <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>{error}</div>}
@@ -108,7 +112,7 @@ const PositionTradeHistory = ({ isin, securityName, bankId, portfolioCode, price
                       <td style={td}>{c.quantityFormatted}</td>
                       <td style={td}>{c.buyUnitFormatted}</td>
                       <td style={td}>{c.sellUnitFormatted}</td>
-                      <td style={{ ...td, fontWeight: 600, color: c.isPositive ? gain : loss }}>
+                      <td style={{ ...td, fontWeight: 600, color: c.pnlFormatted === 'n/a' ? 'var(--text-muted)' : (c.isPositive ? gain : loss) }}>
                         {c.pnlFormatted}{c.pnlPercentFormatted ? ` (${c.pnlPercentFormatted})` : ''}
                       </td>
                     </tr>
@@ -142,22 +146,25 @@ const PositionTradeHistory = ({ isin, securityName, bankId, portfolioCode, price
               render={(t) => (
                 <tr key={t.id}>
                   <td style={{ ...td, ...left }}>{t.dateFormatted}</td>
-                  <td style={{ ...td, fontWeight: 600, color: t.side === 'BUY' ? gain : loss }}>{t.side === 'BUY' ? 'Buy' : 'Sell'}</td>
+                  <td style={{ ...td, fontWeight: 600, color: (t.side === 'BUY' || t.side === 'IN') ? gain : loss }}>{SIDE_LABELS[t.side]}</td>
                   <td style={td}>{t.quantityFormatted}</td>
                   <td style={td}>{t.unitFormatted}</td>
-                  <td style={td}>{t.amountFormatted}</td>
+                  <td style={td} title={t.costNote ? `Valued at ${t.costNote}` : undefined}>{t.amountFormatted}{t.costNote ? '*' : ''}</td>
                   <td style={td}>{t.feesFormatted}</td>
                 </tr>
               )}
             />
 
             <div style={{ marginTop: '0.9rem', fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              {data.trades.some(t => t.costNote) && '* Shares delivered at the end of a structured product carry no price in the bank files: they are valued at the average cost the bank reports for the position. '}
               Built from the bank's operation files for this account{data.firstOperationDate ? `, the first of which is dated ${data.firstOperationDate}` : ''}; earlier trades are not included.
               {data.unmatchedSoldQuantityFormatted && ` ${data.unmatchedSoldQuantityFormatted} units sold have no matching purchase in these files, so they are left out of the round trips.`}
             </div>
           </div>
         )}
-      </Modal>
+      </Modal>,
+      document.body
+      )}
     </>
   );
 };
